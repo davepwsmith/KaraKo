@@ -186,6 +186,8 @@ function KaraKo:loadSettings()
 
     self.download_images = self.settings:readSetting("download_images", true)
     self.max_images = self.settings:readSetting("max_images", 20)
+    self.prefer_archive = self.settings:readSetting("prefer_archive", false)
+    self.max_archive_mb = self.settings:readSetting("max_archive_mb", 4)
 
     self.archive_finished = self.settings:readSetting("archive_finished", true)
     self.archive_read = self.settings:readSetting("archive_read", true)
@@ -207,6 +209,8 @@ function KaraKo:onFlushSettings()
         self.settings:saveSetting("scope_name", self.scope_name)
         self.settings:saveSetting("download_images", self.download_images)
         self.settings:saveSetting("max_images", self.max_images)
+        self.settings:saveSetting("prefer_archive", self.prefer_archive)
+        self.settings:saveSetting("max_archive_mb", self.max_archive_mb)
         self.settings:saveSetting("archive_finished", self.archive_finished)
         self.settings:saveSetting("archive_read", self.archive_read)
         self.settings:saveSetting("archive_abandoned", self.archive_abandoned)
@@ -301,6 +305,17 @@ function KaraKo:addToMainMenu(menu_items)
                 text = _("Embed images"),
                 checked_func = function() return self.download_images end,
                 callback = function() self.download_images = not self.download_images end,
+            },
+            {
+                text = _("Prefer the saved page archive"),
+                help_text = _([[
+Off (recommended): use Karakeep's extracted article, which is just the prose.
+
+On: use your SingleFile upload or Karakeep's full page archive instead, which is the whole page including navigation, sidebars and banners. Karakeep already extracts its article text from a precrawled archive, so this is rarely needed -- it is here for pages where that extraction went wrong.
+
+Either way, an archive is used as a fallback when no extracted article exists.]]),
+                checked_func = function() return self.prefer_archive end,
+                callback = function() self.prefer_archive = not self.prefer_archive end,
                 separator = true,
             },
             {
@@ -879,22 +894,93 @@ function KaraKo:isReadable(bookmark)
     return content.type == "link" or content.type == "text"
 end
 
+--- Fetch an asset into memory, refusing anything implausibly large.
+--
+-- Archives are whole pages with their resources inlined and can run to many
+-- megabytes; a Kobo has little RAM to spare, so there is a ceiling.
+--
+-- @tparam table api
+-- @tparam string asset_id
+-- @tparam number max_bytes
+-- @treturn string|nil Contents, or nil.
+function KaraKo:fetchAsset(api, asset_id, max_bytes)
+    local tmp_path = ffiUtil.joinPath(self.directory, ".karako-asset.tmp")
+
+    local ok = api:downloadAsset(asset_id, tmp_path)
+    if not ok then
+        logger.warn("KaraKo: could not download asset", asset_id)
+        return nil
+    end
+
+    local size = lfs.attributes(tmp_path, "size") or 0
+    if size > max_bytes then
+        logger.warn(string.format("KaraKo: asset %s is %d bytes, over the %d limit - skipping",
+            asset_id, size, max_bytes))
+        os.remove(tmp_path)
+        return nil
+    end
+
+    local handle = io.open(tmp_path, "r")
+    if not handle then
+        os.remove(tmp_path)
+        return nil
+    end
+
+    local body = handle:read("*a")
+    handle:close()
+    os.remove(tmp_path)
+
+    return body
+end
+
+--- Work down the list of possible content sources until one yields something.
+-- @treturn string|nil Article HTML.
+function KaraKo:resolveContent(api, bookmark)
+    local sources = ArticleUtil.contentSources(bookmark, self.prefer_archive)
+    local max_bytes = (self.max_archive_mb or 4) * 1024 * 1024
+
+    for _, source in ipairs(sources) do
+        local body
+
+        if source.kind == "inline" then
+            body = bookmark.content.htmlContent
+
+        elseif source.kind == "asset" then
+            body = self:fetchAsset(api, source.asset_id, max_bytes)
+
+        elseif source.kind == "endpoint" then
+            local ok, markdown = api:getReadableContent(bookmark.id, "markdown")
+            if ok and markdown and markdown ~= "" then
+                body = EpubBuilder.markdownToHtml(markdown)
+            end
+        end
+
+        if body and body ~= "" then
+            logger.dbg("KaraKo:", bookmark.id, "content from", source.label, #body, "bytes")
+            if source.full_page then
+                -- A whole-page snapshot rather than an extracted article, so it
+                -- arrives with navigation and other page furniture attached.
+                logger.info("KaraKo:", bookmark.id, "using", source.label,
+                    "- expect page furniture around the article")
+            end
+            return body
+        end
+    end
+
+    return nil
+end
+
 function KaraKo:downloadArticle(api, bookmark)
     local Trapper = require("ui/trapper")
     local content = bookmark.content or {}
     local title = bookmark.title or content.title or content.url
 
-    local body_html = content.htmlContent
-
-    -- text bookmarks carry their body directly; links may not have been crawled
-    -- yet, in which case the readable-content endpoint is the fallback.
+    local body_html
     if content.type == "text" then
+        -- text bookmarks carry their body directly.
         body_html = EpubBuilder.markdownToHtml(content.text or "")
-    elseif not body_html or body_html == "" then
-        local ok, markdown = api:getReadableContent(bookmark.id, "markdown")
-        if ok and markdown and markdown ~= "" then
-            body_html = EpubBuilder.markdownToHtml(markdown)
-        end
+    else
+        body_html = self:resolveContent(api, bookmark)
     end
 
     if not body_html or body_html == "" then

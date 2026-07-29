@@ -271,6 +271,86 @@ describe("sniffImageType", function()
     end)
 end)
 
+describe("contentSources", function()
+    local function link(fields)
+        local content = { type = "link", url = "https://e.com/a" }
+        for k, v in pairs(fields) do content[k] = v end
+        return { id = "b1", content = content }
+    end
+
+    local function labels(sources)
+        local out = {}
+        for _, source in ipairs(sources) do table.insert(out, source.label) end
+        return table.concat(out, " > ")
+    end
+
+    it("prefers inline readable HTML", function()
+        local sources = ArticleUtil.contentSources(link{ htmlContent = "<p>x</p>" })
+        assertEqual(sources[1].kind, "inline")
+    end)
+
+    it("uses the content asset, which is the common case over ~5 KB", function()
+        -- Karakeep nulls htmlContent and stores the same HTML as an asset once
+        -- it passes the inline threshold.
+        local sources = ArticleUtil.contentSources(link{ contentAssetId = "a1" })
+        assertEqual(sources[1].kind, "asset")
+        assertEqual(sources[1].asset_id, "a1")
+        assertTrue(not sources[1].full_page)
+    end)
+
+    it("puts extracted content ahead of archives by default", function()
+        local sources = ArticleUtil.contentSources(link{
+            contentAssetId = "a1",
+            precrawledArchiveAssetId = "p1",
+            fullPageArchiveAssetId = "f1",
+        })
+        assertEqual(labels(sources),
+            "readable HTML asset > precrawled archive > full page archive > readable content endpoint")
+    end)
+
+    it("prefers the user's own capture over Karakeep's snapshot", function()
+        local sources = ArticleUtil.contentSources(link{
+            precrawledArchiveAssetId = "p1",
+            fullPageArchiveAssetId = "f1",
+        })
+        assertEqual(sources[1].label, "precrawled archive")
+        assertEqual(sources[2].label, "full page archive")
+    end)
+
+    it("flips the order when asked to prefer archives", function()
+        local sources = ArticleUtil.contentSources(link{
+            htmlContent = "<p>x</p>",
+            precrawledArchiveAssetId = "p1",
+        }, true)
+        assertEqual(labels(sources),
+            "precrawled archive > inline readable HTML > readable content endpoint")
+    end)
+
+    it("marks archives as whole pages", function()
+        local sources = ArticleUtil.contentSources(link{ precrawledArchiveAssetId = "p1" })
+        assertTrue(sources[1].full_page)
+    end)
+
+    it("always ends with the endpoint, so there is a last resort", function()
+        local bare = ArticleUtil.contentSources(link{})
+        assertEqual(#bare, 1)
+        assertEqual(bare[1].kind, "endpoint")
+    end)
+
+    it("ignores empty strings, which are not usable content", function()
+        local sources = ArticleUtil.contentSources(link{ htmlContent = "", contentAssetId = "" })
+        assertEqual(#sources, 1)
+        assertEqual(sources[1].kind, "endpoint")
+    end)
+
+    it("returns nothing for bookmarks that are not links", function()
+        assertEqual(#ArticleUtil.contentSources{ content = { type = "text", text = "x" } }, 0)
+        assertEqual(#ArticleUtil.contentSources{ content = { type = "asset" } }, 0)
+        assertEqual(#ArticleUtil.contentSources{}, 0)
+        assertEqual(#ArticleUtil.contentSources(nil), 0)
+    end)
+end)
+
 describe("displayText", function()
     it("passes ordinary strings through", function()
         assertEqual(ArticleUtil.displayText("A Title"), "A Title")

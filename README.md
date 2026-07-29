@@ -29,18 +29,24 @@ same problem for a different read-it-later service.
 
 ## API key scopes
 
-Karakeep lets you scope an API key per resource. The plugin needs five of them,
-and **None** for everything else — no Assets, Backups, Feeds, Prompts, Rules,
-Webhooks, or any Admin scope:
+Karakeep lets you scope an API key per resource. The plugin needs six of them,
+and **None** for everything else — no Backups, Feeds, Prompts, Rules, Webhooks,
+or any Admin scope:
 
 | Resource | Access | Needed for |
 | --- | --- | --- |
 | **Bookmarks** | Read/write | Everything. Read to list and fetch articles; write to archive them |
+| **Assets** | Read | Article text, which Karakeep stores out of line above ~5 KB |
 | **Highlights** | Read/write | Sending highlights back. Read first, to avoid duplicates |
 | **Lists** | Read | Only the "choose a list" picker |
 | **Tags** | Read | Only the "choose a tag" picker |
 | **User account** | Read | Only the `Save and test` button |
 | *everything else* | None | Never called |
+
+**Assets: Read is not optional in practice.** Karakeep inlines an article's HTML
+only while it is under `HTML_CONTENT_SIZE_INLINE_THRESHOLD_BYTES`, which defaults
+to **5 KB** — most real articles are larger, so their text lives in an asset. See
+[Where article text comes from](#where-article-text-comes-from).
 
 Two of these are not what you would guess, so they are worth stating plainly.
 Both were confirmed against Karakeep's own scope enforcement in
@@ -61,7 +67,7 @@ matching feature off:
 
 | If you want | Grant |
 | --- | --- |
-| Downloads only, nothing written back | Bookmarks: **Read** |
+| Downloads only, nothing written back | Bookmarks: **Read**, Assets: **Read** |
 | …plus archive on finish, and tag on archive | Bookmarks: **Read/write** |
 | …plus highlights sent back | Highlights: **Read/write** |
 | …plus picking a list or tag in the menu | Lists: **Read**, Tags: **Read** |
@@ -148,7 +154,7 @@ quickest way to catch a stale install — the line numbers in a stack trace will
 not tell you:
 
 ```
-INFO  KaraKo: version 0.2.0, main.lua modified 2026-07-29 12:25:28, loaded from …/plugins/karako.koplugin
+INFO  KaraKo: version 0.3.0, main.lua modified 2026-07-29 12:25:28, loaded from …/plugins/karako.koplugin
 ```
 
 If that timestamp is older than your last `cp`, KOReader is running the previous
@@ -227,12 +233,53 @@ Notes on how it behaves:
 | What to sync | All unread | All unarchived bookmarks, or one list or tag |
 | Articles per sync | 30 | Fetches the most recent unread articles, up to this many |
 | Embed images | On | Off gives much smaller files and faster syncs |
+| Prefer the saved page archive | Off | Use the whole-page archive instead of the extracted article |
 | Archive it in Karakeep | On | When you mark an article as finished |
 | Archive when 100% read | On | Reaching the last page counts as finished |
 | Archive when abandoned | Off | Treat "abandoned" as done |
 | Also add a tag | Off | e.g. `read-on-kobo`, created if it does not exist |
 | Delete the local copy once archived | On | Off keeps finished articles on device |
 | Send highlights to Karakeep | On | See the caveat below |
+
+## Where article text comes from
+
+Karakeep can hold the same page in several forms, so the plugin works down a
+list until one yields something. In order:
+
+1. **`htmlContent`** — the extracted article, inlined on the bookmark.
+2. **`contentAssetId`** — the same extracted article, stored as an asset.
+   Karakeep only inlines content below `HTML_CONTENT_SIZE_INLINE_THRESHOLD_BYTES`
+   (**5 KB** by default, despite a comment in its source saying 50 KB), so for
+   most real articles this is where the text actually is.
+3. **`precrawledArchive`** — what a [SingleFile][singlefile] upload produced.
+4. **`fullPageArchive`** — Karakeep's own snapshot, when it made one.
+5. **`/bookmarks/{id}/content`** — served as markdown, so images and finer
+   formatting are lost converting back to HTML. A genuine last resort.
+
+[singlefile]: https://github.com/gildas-lormeau/SingleFile
+
+### Why archives are a fallback, not the preference
+
+If you save paywalled pages with SingleFile, it is tempting to have the plugin
+read those archives directly. It normally should not, for two reasons:
+
+- **Your archive is already the source.** When a bookmark has a precrawled
+  archive, Karakeep's crawler skips fetching the URL and runs *the archive*
+  through its readability extraction instead. So the text of your SingleFile
+  capture, paywall and all, has already become `htmlContent`/`contentAssetId`
+  before the plugin ever sees the bookmark. Steps 1 and 2 give you that content
+  with none of the drawbacks below.
+- **An archive is the whole page.** Navigation, sidebars, cookie banners,
+  related-article rails and inlined CSS all come with it, and it can run to
+  several megabytes. On a Kobo that is slower to build and considerably worse to
+  read than the extracted article.
+
+So steps 3 and 4 exist for the case where extraction genuinely failed — an
+awkward page layout, say — and your archive is the only complete copy left.
+
+**KaraKo → Prefer the saved page archive** flips the order if you would rather
+have the whole page. Archives are capped at 4 MB (`max_archive_mb`); anything
+larger is skipped with a warning rather than risking the device's memory.
 
 ## How highlights are matched
 

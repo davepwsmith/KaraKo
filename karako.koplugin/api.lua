@@ -264,9 +264,24 @@ function KarakeepApi:getReadableContent(id, format)
     return true, table.concat(chunks)
 end
 
--- No /assets endpoint is used. Article images are fetched from their original
--- URLs by epubbuilder.lua, which keeps the API token off third-party requests
--- and means the API key needs no "Assets" scope at all.
+--- Download an asset to a local file.
+--
+-- Used for readable HTML that Karakeep stored out of line (the common case for
+-- anything over about 5 KB) and for page archives. A file rather than memory,
+-- so the size can be checked before a possibly large archive is read in.
+--
+-- Article images are not fetched this way: epubbuilder.lua gets those from
+-- their original URLs, which keeps the API token off third-party requests.
+--
+-- Requires the "Assets: Read" scope on the API key.
+--
+-- @tparam string asset_id
+-- @tparam string filepath
+-- @treturn bool ok
+-- @treturn string|nil filepath, or an error code.
+function KarakeepApi:downloadAsset(asset_id, filepath)
+    return self:call("GET", "/assets/" .. asset_id, { filepath = filepath })
+end
 
 --- Update mutable bookmark fields, e.g. { archived = true }.
 function KarakeepApi:updateBookmark(id, fields)

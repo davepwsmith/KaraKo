@@ -34,8 +34,10 @@ Config.SCHEMA = {
 
     articles_per_sync = "number",
     max_images = "number",
+    max_archive_mb = "number",
 
     download_images = "boolean",
+    prefer_archive = "boolean",
     archive_finished = "boolean",
     archive_read = "boolean",
     archive_abandoned = "boolean",

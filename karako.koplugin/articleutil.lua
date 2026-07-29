@@ -388,6 +388,76 @@ function ArticleUtil.sniffImageType(data)
     return nil
 end
 
+--- Where an article's text might come from, best first.
+--
+-- Karakeep stores readable content in one of two places. Below a size threshold
+-- (5 KB by default, despite a comment in its source saying 50 KB) it is inlined
+-- as `htmlContent`; at or above it, `htmlContent` is null and the same HTML is
+-- an asset referenced by `contentAssetId`. Most real articles are over 5 KB, so
+-- the asset is the common case, not the exception.
+--
+-- The archives are a different kind of thing. `precrawledArchive` is what a
+-- SingleFile upload produced and `fullPageArchive` is Karakeep's own snapshot;
+-- both are whole pages, including navigation, sidebars, cookie banners and
+-- inlined assets. Karakeep runs a precrawled archive through the same
+-- readability extraction it uses for a live crawl, so its text has already
+-- reached `htmlContent`/`contentAssetId` by the time we see the bookmark. They
+-- are therefore a fallback for when extraction produced nothing, not a
+-- preference -- unless the caller asks otherwise.
+--
+-- @tparam table bookmark
+-- @tparam[opt=false] bool prefer_archive Put the archives first.
+-- @treturn table Array of { kind, asset_id, full_page, label }.
+function ArticleUtil.contentSources(bookmark, prefer_archive)
+    local content = (type(bookmark) == "table" and bookmark.content) or {}
+    if content.type ~= "link" then return {} end
+
+    local readable, archives = {}, {}
+
+    if type(content.htmlContent) == "string" and content.htmlContent ~= "" then
+        table.insert(readable, { kind = "inline", label = "inline readable HTML" })
+    end
+    if type(content.contentAssetId) == "string" and content.contentAssetId ~= "" then
+        table.insert(readable, {
+            kind = "asset",
+            asset_id = content.contentAssetId,
+            label = "readable HTML asset",
+        })
+    end
+
+    -- The user's own capture first: it is the one that can hold content behind
+    -- a paywall they are entitled to read.
+    if type(content.precrawledArchiveAssetId) == "string" and content.precrawledArchiveAssetId ~= "" then
+        table.insert(archives, {
+            kind = "asset",
+            asset_id = content.precrawledArchiveAssetId,
+            full_page = true,
+            label = "precrawled archive",
+        })
+    end
+    if type(content.fullPageArchiveAssetId) == "string" and content.fullPageArchiveAssetId ~= "" then
+        table.insert(archives, {
+            kind = "asset",
+            asset_id = content.fullPageArchiveAssetId,
+            full_page = true,
+            label = "full page archive",
+        })
+    end
+
+    local sources = {}
+    local first = prefer_archive and archives or readable
+    local second = prefer_archive and readable or archives
+
+    for _, source in ipairs(first) do table.insert(sources, source) end
+    for _, source in ipairs(second) do table.insert(sources, source) end
+
+    -- Always last: it is served as markdown, so formatting and images are lost
+    -- in the conversion back to HTML.
+    table.insert(sources, { kind = "endpoint", label = "readable content endpoint" })
+
+    return sources
+end
+
 --- Coerce a value to something safe to put in a UI string.
 --
 -- stripJsonNulls() should mean nothing odd ever reaches formatting, but a
