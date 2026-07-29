@@ -143,6 +143,17 @@ flatpak run rocks.koreader.KOReader -d
 It can also be turned on persistently in the UI, under
 **Help → Report a bug → Enable verbose logging**.
 
+The first thing the plugin logs is which copy of itself is running, which is the
+quickest way to catch a stale install — the line numbers in a stack trace will
+not tell you:
+
+```
+INFO  KaraKo: version 0.2.0, main.lua modified 2026-07-29 12:25:28, loaded from …/plugins/karako.koplugin
+```
+
+If that timestamp is older than your last `cp`, KOReader is running the previous
+copy. Delete the destination folder before copying over it.
+
 Lines from this plugin are tagged `KaraKo:`, and HTTP requests `KaraKoApi:`:
 
 ```sh
@@ -166,6 +177,48 @@ on a Kobo or Kindle — stdout is the only place the log appears.
 
 You can bind *Synchronise KaraKo* to a gesture under
 **Settings → Gestures**.
+
+### Setting up from a file instead
+
+Typing an API key on an e-reader keyboard is miserable, so settings can be read
+from a plain text file instead. **KaraKo → Settings file → Create an example
+file** writes a commented one for you; edit it on a computer and use *Reload it
+now*, or just restart KOReader.
+
+```ini
+# karako.conf
+server_url = https://karakeep.example.com
+api_token  = ak1_your_key_here
+directory  = /mnt/onboard/karakeep
+
+articles_per_sync = 50
+download_images   = false
+archive_tag       = read-on-kobo
+```
+
+Checked in this order, first found wins — **Settings file → Where KaraKo looks**
+shows the list with the active one ticked:
+
+1. `<koreader data dir>/karako.conf`
+2. `<koreader data dir>/settings/karako.conf`
+3. `karako.koplugin/karako.conf`, next to the plugin
+
+On Flatpak the data directory is
+`~/.var/app/rocks.koreader.KOReader/config/koreader`; on a Kobo it is
+`/mnt/onboard/.adds/koreader`.
+
+Notes on how it behaves:
+
+- Settings the file names are applied **at every start** and override the menu,
+  which is what makes it declarative — you can keep it with your dotfiles.
+  Delete a line to hand that setting back to the menu.
+- Anything the file leaves out stays under the menu's control.
+- Values are taken literally to end of line, so URLs and tokens need no quoting.
+  `key: value` works as well as `key = value`; `#` and `;` start a comment;
+  booleans accept `true/false`, `yes/no`, `on/off`, `1/0`.
+- A misspelled setting is **reported in the log**, not silently ignored.
+- The file holds your API key in plain text. Keep it readable only by you, and
+  give the device its own key so it can be revoked on its own.
 
 ## Settings
 

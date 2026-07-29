@@ -388,6 +388,24 @@ function ArticleUtil.sniffImageType(data)
     return nil
 end
 
+--- Coerce a value to something safe to put in a UI string.
+--
+-- stripJsonNulls() should mean nothing odd ever reaches formatting, but a
+-- surprise from the API should degrade to a readable label rather than throw
+-- from inside string.gsub and abandon the whole sync.
+--
+-- @tparam any value
+-- @tparam[opt="?"] string fallback Used when the value is not usable text.
+-- @treturn string
+function ArticleUtil.displayText(value, fallback)
+    fallback = fallback or "?"
+
+    if type(value) == "string" and value ~= "" then return value end
+    if type(value) == "number" then return tostring(value) end
+
+    return fallback
+end
+
 --- Replace JSON nulls with nil throughout a decoded response.
 --
 -- KOReader's JSON decoder represents null as a *function*, because a nil would

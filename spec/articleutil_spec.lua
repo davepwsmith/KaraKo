@@ -271,6 +271,32 @@ describe("sniffImageType", function()
     end)
 end)
 
+describe("displayText", function()
+    it("passes ordinary strings through", function()
+        assertEqual(ArticleUtil.displayText("A Title"), "A Title")
+    end)
+
+    it("falls back for anything unusable", function()
+        local function jsonNull() end
+        assertEqual(ArticleUtil.displayText(jsonNull, "Untitled"), "Untitled")
+        assertEqual(ArticleUtil.displayText(nil, "Untitled"), "Untitled")
+        assertEqual(ArticleUtil.displayText("", "Untitled"), "Untitled")
+        assertEqual(ArticleUtil.displayText({}, "Untitled"), "Untitled")
+    end)
+
+    it("renders numbers", function()
+        assertEqual(ArticleUtil.displayText(42), "42")
+    end)
+
+    it("never returns a value string.format would reject", function()
+        local function jsonNull() end
+        for _, v in ipairs({ "ok", 1 }) do
+            assertTrue(pcall(string.format, "%s", ArticleUtil.displayText(v)))
+        end
+        assertTrue(pcall(string.format, "%s", ArticleUtil.displayText(jsonNull)))
+    end)
+end)
+
 describe("stripJsonNulls", function()
     -- KOReader decodes JSON null to a function, which is truthy. Stand-in here.
     local function jsonNull() end -- the value itself is the sentinel; never called

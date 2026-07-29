@@ -32,6 +32,7 @@ local N_ = _.ngettext
 local T = ffiUtil.template
 
 local ArticleUtil = require("articleutil")
+local Config = require("config")
 local EpubBuilder = require("epubbuilder")
 local Highlights = require("highlights")
 local KarakeepApi = require("api")
@@ -61,10 +62,87 @@ function KaraKo:onDispatcherRegisterActions()
 end
 
 function KaraKo:init()
+    self:logBuild()
     self.settings = self:openSettings()
     self:loadSettings()
+    self:applyConfigFile()
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
+end
+
+--- Log which copy of the plugin is actually running.
+--
+-- A stack trace gives line numbers, which are useless for telling a fixed copy
+-- from a stale one still sitting in the plugins directory. The path and the
+-- modification time of main.lua settle it immediately.
+function KaraKo:logBuild()
+    local path = self.path or "?"
+    local main_lua = ffiUtil.joinPath(path, "main.lua")
+    local modified = lfs.attributes(main_lua, "modification")
+
+    logger.info(string.format("KaraKo: version %s, main.lua modified %s, loaded from %s",
+        self.version or "?",
+        modified and os.date("%Y-%m-%d %H:%M:%S", modified) or "?",
+        path))
+end
+
+--- Where a config file may live, in the order they are tried.
+--
+-- The data directory first, because it survives replacing the plugin folder;
+-- next to the plugin second, because that is the folder you just copied over
+-- and the obvious place to look.
+-- @treturn table Array of paths.
+function KaraKo:configPaths()
+    local data_dir = DataStorage:getDataDir()
+    return {
+        data_dir .. "/karako.conf",
+        data_dir .. "/settings/karako.conf",
+        ffiUtil.joinPath(self.path or ".", "karako.conf"),
+    }
+end
+
+--- Find a config file, if there is one.
+-- @treturn string|nil Path.
+function KaraKo:findConfigFile()
+    for _, path in ipairs(self:configPaths()) do
+        if lfs.attributes(path, "mode") == "file" then
+            return path
+        end
+    end
+end
+
+--- Apply a config file over the stored settings.
+--
+-- Settings the file names win, every start, which is what makes the file
+-- declarative. Settings it leaves out stay under the menu's control.
+--
+-- @treturn string|nil Path applied.
+-- @treturn table Problems found in the file.
+function KaraKo:applyConfigFile()
+    local path = self:findConfigFile()
+    if not path then return nil, {} end
+
+    local values, problems = Config.read(path)
+    if not values then return nil, problems end
+
+    local applied = 0
+    for key, value in pairs(values) do
+        self[key] = value
+        applied = applied + 1
+    end
+
+    if applied > 0 then
+        -- Persist, so the settings survive the file being removed later.
+        self:onFlushSettings()
+    end
+
+    logger.info("KaraKo: applied", applied, "settings from", path)
+    for _, problem in ipairs(problems) do
+        logger.warn("KaraKo: " .. path .. ": " .. problem)
+    end
+
+    self.config_path = path
+    return path, problems
 end
 
 --- Open our settings, migrating from the name an earlier build used.
@@ -187,9 +265,18 @@ function KaraKo:addToMainMenu(menu_items)
             },
             {
                 text = _("Server"),
-                separator = true,
                 keep_menu_open = true,
                 callback = function(touchmenu_instance) self:editServerSettings(touchmenu_instance) end,
+            },
+            {
+                text_func = function()
+                    if self.config_path then return _("Settings file: in use") end
+                    return _("Settings file: none")
+                end,
+                help_text = _("Set up KaraKo from a text file instead of typing an API key on the device."),
+                separator = true,
+                keep_menu_open = true,
+                sub_item_table_func = function() return self:configFileMenu() end,
             },
             {
                 text_func = function()
@@ -360,6 +447,75 @@ function KaraKo:chooseScope(kind, touchmenu_instance)
         }
         UIManager:show(chooser)
     end)
+end
+
+--- Menu for the optional config file.
+function KaraKo:configFileMenu()
+    return {
+        {
+            text = _("Where KaraKo looks"),
+            keep_menu_open = true,
+            callback = function()
+                local lines = { _("Checked in order, first one found wins:"), "" }
+                for _, path in ipairs(self:configPaths()) do
+                    local marker = (path == self.config_path) and "\u{2713} " or "\u{00B7} "
+                    table.insert(lines, marker .. path)
+                end
+                UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
+            end,
+        },
+        {
+            text = _("Create an example file"),
+            keep_menu_open = true,
+            callback = function(touchmenu_instance) self:writeConfigTemplate(touchmenu_instance) end,
+        },
+        {
+            text = _("Reload it now"),
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                local path, problems = self:applyConfigFile()
+
+                local text
+                if not path then
+                    text = _("No settings file found.")
+                else
+                    text = T(_("Loaded settings from:\n%1"), path)
+                    if #problems > 0 then
+                        text = text .. "\n\n" .. table.concat(problems, "\n")
+                    end
+                end
+
+                UIManager:show(InfoMessage:new{ text = text })
+                if touchmenu_instance then touchmenu_instance:updateItems() end
+            end,
+        },
+    }
+end
+
+--- Write a commented example config file for the user to fill in.
+function KaraKo:writeConfigTemplate(touchmenu_instance)
+    local path = DataStorage:getDataDir() .. "/karako.conf"
+
+    if lfs.attributes(path, "mode") == "file" then
+        UIManager:show(InfoMessage:new{
+            text = T(_("A settings file already exists at:\n%1\n\nIt was left untouched."), path),
+        })
+        return
+    end
+
+    local handle = io.open(path, "w")
+    if not handle then
+        UIManager:show(InfoMessage:new{ text = T(_("Could not write to:\n%1"), path) })
+        return
+    end
+
+    handle:write(Config.template())
+    handle:close()
+
+    UIManager:show(InfoMessage:new{
+        text = T(_("Wrote an example settings file to:\n%1\n\nEdit it on a computer, then use 'Reload it now'."), path),
+    })
+    if touchmenu_instance then touchmenu_instance:updateItems() end
 end
 
 function KaraKo:editServerSettings(touchmenu_instance)
@@ -588,8 +744,15 @@ function KaraKo:synchronize()
 
     Trapper:info(_("Fetching your Karakeep articles…"))
 
+    logger.info(string.format("KaraKo: syncing scope=%s%s limit=%d from %s",
+        self.sync_scope,
+        self.scope_id and (":" .. self.scope_id) or "",
+        self.articles_per_sync,
+        self.server_url))
+
     local remote, err, complete = self:fetchBookmarks(api)
     if not remote then
+        logger.err("KaraKo: fetch failed:", tostring(err))
         Trapper:reset()
         UIManager:show(InfoMessage:new{
             text = err == "network_error" and _("Could not reach the Karakeep server.")
@@ -612,10 +775,11 @@ function KaraKo:synchronize()
         if local_articles[bookmark.id] then
             skipped = skipped + 1
         else
-            local title = bookmark.title
-                or (bookmark.content and bookmark.content.title)
-                or (bookmark.content and bookmark.content.url)
-                or _("Untitled")
+            local content = bookmark.content or {}
+            local title = ArticleUtil.displayText(
+                bookmark.title or content.title or content.url, _("Untitled"))
+
+            logger.dbg("KaraKo: downloading", bookmark.id, title)
 
             local go_on = Trapper:info(T(_("Downloading %1 of %2:\n\n%3"), index, #remote, title))
             if not go_on then
@@ -638,6 +802,10 @@ function KaraKo:synchronize()
     if complete and not cancelled then
         removed = self:processRemoteDeletes(local_articles, remote_ids)
     end
+
+    logger.info(string.format(
+        "KaraKo: sync done - %d fetched, %d downloaded, %d skipped, %d failed, %d removed (complete=%s cancelled=%s)",
+        #remote, downloaded, skipped, failed, removed, tostring(complete), tostring(cancelled)))
 
     Trapper:reset()
     self:refreshFileManager()
