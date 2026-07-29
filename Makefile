@@ -1,7 +1,7 @@
 LUA ?= $(shell command -v lua5.1 || command -v luajit || command -v lua)
 LUAC ?= $(shell command -v luac5.1 || command -v luac)
 
-PLUGIN_SOURCES := $(wildcard karakeep.koplugin/*.lua) $(wildcard spec/*.lua)
+PLUGIN_SOURCES := $(wildcard karako.koplugin/*.lua) $(wildcard spec/*.lua)
 # tools/ runs inside KOReader and must set G_reader_settings, which is a global
 # by KOReader's design, so it gets the syntax check but not the globals check.
 ALL_SOURCES := $(PLUGIN_SOURCES) $(wildcard tools/*.lua)

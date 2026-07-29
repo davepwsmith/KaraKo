@@ -3,7 +3,7 @@
 -- The plugin directory is put on package.path exactly the way KOReader's
 -- pluginloader does it, so the specs require modules by the same names the
 -- plugin itself uses.
-package.path = "./?.lua;./karakeep.koplugin/?.lua;" .. package.path
+package.path = "./?.lua;./karako.koplugin/?.lua;" .. package.path
 
 local Runner = require("spec.runner")
 

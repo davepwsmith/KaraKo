@@ -1,5 +1,5 @@
 --[[--
-Karakeep plugin for KOReader.
+KaraKo plugin for KOReader.
 
 Synchronises unread articles from a Karakeep server onto the device as EPUBs,
 and pushes read status and highlights back when you are done with them.
@@ -9,7 +9,7 @@ a different read-it-later service. The notable differences are that Karakeep has
 no EPUB export endpoint (so epubbuilder.lua assembles one on device) and that it
 does have a highlights API (so highlights.lua can push annotations back).
 
-@module koplugin.karakeep.main
+@module koplugin.karako.main
 ]]
 
 local DataStorage = require("datastorage")
@@ -36,34 +36,67 @@ local EpubBuilder = require("epubbuilder")
 local Highlights = require("highlights")
 local KarakeepApi = require("api")
 
-local Karakeep = WidgetContainer:extend{
-    name = "karakeep",
+-- Named "karako", not "karakeep": AlgusDark's karakeep.koplugin sends bookmarks
+-- and clippings to Karakeep, which is the opposite direction to this plugin, and
+-- the two are useful together. Sharing a plugin name, menu key or settings file
+-- would stop them coexisting.
+local KaraKo = WidgetContainer:extend{
+    name = "karako",
     is_doc_only = false,
 }
 
-function Karakeep:onDispatcherRegisterActions()
-    Dispatcher:registerAction("karakeep_sync", {
+function KaraKo:onDispatcherRegisterActions()
+    Dispatcher:registerAction("karako_sync", {
         category = "none",
-        event = "SynchronizeKarakeep",
-        title = _("Synchronise Karakeep"),
+        event = "SynchronizeKarako",
+        title = _("Synchronise KaraKo"),
         general = true,
     })
-    Dispatcher:registerAction("karakeep_go_to_directory", {
+    Dispatcher:registerAction("karako_go_to_directory", {
         category = "none",
-        event = "GoToKarakeepDirectory",
-        title = _("Go to Karakeep folder"),
+        event = "GoToKarakoDirectory",
+        title = _("Go to KaraKo folder"),
         general = true,
     })
 end
 
-function Karakeep:init()
-    self.settings = LuaSettings:open(DataStorage:getSettingsDir() .. "/karakeep.lua")
+function KaraKo:init()
+    self.settings = self:openSettings()
     self:loadSettings()
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
 end
 
-function Karakeep:loadSettings()
+--- Open our settings, migrating from the name an earlier build used.
+--
+-- This plugin used to write settings/karakeep.lua, which is also the file
+-- AlgusDark's karakeep.koplugin uses. Migration is therefore guarded on a key
+-- only we write, so that an install of that plugin is never mistaken for our
+-- own old settings and read in.
+-- @treturn table LuaSettings
+function KaraKo:openSettings()
+    local settings_dir = DataStorage:getSettingsDir()
+    local settings = LuaSettings:open(settings_dir .. "/karako.lua")
+
+    if settings:readSetting("server_url") ~= nil then
+        return settings -- already ours, nothing to do
+    end
+
+    local legacy = LuaSettings:open(settings_dir .. "/karakeep.lua")
+    if legacy:readSetting("articles_per_sync") == nil then
+        return settings -- not ours: either absent, or another plugin's
+    end
+
+    logger.info("KaraKo: migrating settings from karakeep.lua to karako.lua")
+    for key, value in pairs(legacy.data or {}) do
+        settings:saveSetting(key, value)
+    end
+    settings:flush()
+
+    return settings
+end
+
+function KaraKo:loadSettings()
     self.server_url = self.settings:readSetting("server_url", "")
     self.api_token = self.settings:readSetting("api_token", "")
     self.directory = self.settings:readSetting("directory")
@@ -85,7 +118,7 @@ function Karakeep:loadSettings()
     self.sync_highlights = self.settings:readSetting("sync_highlights", true)
 end
 
-function Karakeep:onFlushSettings()
+function KaraKo:onFlushSettings()
     if self.settings then
         self.settings:saveSetting("server_url", self.server_url)
         self.settings:saveSetting("api_token", self.api_token)
@@ -106,14 +139,14 @@ function Karakeep:onFlushSettings()
     end
 end
 
-function Karakeep:getApi()
+function KaraKo:getApi()
     return KarakeepApi:new{
         server_url = self.server_url,
         api_token = self.api_token,
     }
 end
 
-function Karakeep:isReady()
+function KaraKo:isReady()
     return self.server_url ~= "" and self.api_token ~= "" and self.directory ~= nil
 end
 
@@ -121,14 +154,14 @@ end
 -- Menu
 --------------------------------------------------------------------------------
 
-function Karakeep:addToMainMenu(menu_items)
-    menu_items.karakeep = {
-        text = _("Karakeep"),
+function KaraKo:addToMainMenu(menu_items)
+    menu_items.karako = {
+        text = _("KaraKo"),
         sorting_hint = "more_tools",
         sub_item_table = {
             {
                 text = _("Synchronise now"),
-                callback = function() self:onSynchronizeKarakeep() end,
+                callback = function() self:onSynchronizeKarako() end,
             },
             {
                 text = _("Send read status and highlights"),
@@ -149,8 +182,8 @@ function Karakeep:addToMainMenu(menu_items)
                 end,
             },
             {
-                text = _("Go to Karakeep folder"),
-                callback = function() self:onGoToKarakeepDirectory() end,
+                text = _("Go to KaraKo folder"),
+                callback = function() self:onGoToKarakoDirectory() end,
             },
             {
                 text = _("Server"),
@@ -234,7 +267,7 @@ Highlights are matched to the article by their text, because KOReader and Karake
     }
 end
 
-function Karakeep:describeScope()
+function KaraKo:describeScope()
     if self.sync_scope == "list" then
         return T(_("list '%1'"), self.scope_name or self.scope_id or "?")
     elseif self.sync_scope == "tag" then
@@ -243,7 +276,7 @@ function Karakeep:describeScope()
     return _("all unread")
 end
 
-function Karakeep:scopeMenu()
+function KaraKo:scopeMenu()
     return {
         {
             text = _("All unarchived bookmarks"),
@@ -270,7 +303,7 @@ function Karakeep:scopeMenu()
 end
 
 --- Fetch the available lists or tags from the server and let the user pick one.
-function Karakeep:chooseScope(kind, touchmenu_instance)
+function KaraKo:chooseScope(kind, touchmenu_instance)
     if self.server_url == "" or self.api_token == "" then
         UIManager:show(InfoMessage:new{ text = _("Configure the server first.") })
         return
@@ -329,7 +362,7 @@ function Karakeep:chooseScope(kind, touchmenu_instance)
     end)
 end
 
-function Karakeep:editServerSettings(touchmenu_instance)
+function KaraKo:editServerSettings(touchmenu_instance)
     local dialog
     dialog = MultiInputDialog:new{
         title = _("Karakeep server"),
@@ -343,7 +376,7 @@ function Karakeep:editServerSettings(touchmenu_instance)
                 text = self.api_token,
                 input_type = "string",
                 text_type = "password",
-                hint = _("API key (Karakeep: Settings > API Keys)"),
+                hint = _("API key (KaraKo: Settings > API Keys)"),
             },
         },
         buttons = {
@@ -372,7 +405,7 @@ function Karakeep:editServerSettings(touchmenu_instance)
     dialog:onShowKeyboard()
 end
 
-function Karakeep:testConnection()
+function KaraKo:testConnection()
     if self.server_url == "" or self.api_token == "" then
         UIManager:show(InfoMessage:new{ text = _("Both the server address and an API key are required.") })
         return
@@ -400,7 +433,7 @@ function Karakeep:testConnection()
     end)
 end
 
-function Karakeep:setArticlesPerSync(touchmenu_instance)
+function KaraKo:setArticlesPerSync(touchmenu_instance)
     UIManager:show(SpinWidget:new{
         title_text = _("Articles per sync"),
         info_text = _("The most recent unread articles are fetched, up to this many. Local copies are only tidied up when a sync sees everything, so a limit smaller than your unread count leaves them alone."),
@@ -416,7 +449,7 @@ function Karakeep:setArticlesPerSync(touchmenu_instance)
     })
 end
 
-function Karakeep:setArchiveTag(touchmenu_instance)
+function KaraKo:setArchiveTag(touchmenu_instance)
     local InputDialog = require("ui/widget/inputdialog")
     local dialog
     dialog = InputDialog:new{
@@ -445,7 +478,7 @@ function Karakeep:setArchiveTag(touchmenu_instance)
     dialog:onShowKeyboard()
 end
 
-function Karakeep:setDownloadDirectory(touchmenu_instance)
+function KaraKo:setDownloadDirectory(touchmenu_instance)
     require("ui/downloadmgr"):new{
         onConfirm = function(path)
             self.directory = path
@@ -463,7 +496,7 @@ end
 -- @tparam[opt] string dir
 -- @tparam[opt] table map
 -- @treturn table
-function Karakeep:getLocalArticles(dir, map)
+function KaraKo:getLocalArticles(dir, map)
     dir = dir or self.directory
     map = map or {}
 
@@ -491,7 +524,7 @@ end
 --- Decide whether a local article counts as done with.
 -- @tparam string path
 -- @treturn bool
-function Karakeep:isFinished(path)
+function KaraKo:isFinished(path)
     if not DocSettings:hasSidecarFile(path) then
         return false -- never opened
     end
@@ -511,14 +544,14 @@ function Karakeep:isFinished(path)
     return false
 end
 
-function Karakeep:deleteLocalArticle(path)
+function KaraKo:deleteLocalArticle(path)
     if lfs.attributes(path, "mode") == "file" then
         -- deleteFile() takes care of the sidecar and the history entry too.
         FileManager:deleteFile(path, true)
     end
 end
 
-function Karakeep:refreshFileManager()
+function KaraKo:refreshFileManager()
     if FileManager.instance then
         FileManager.instance:onRefresh()
     end
@@ -528,7 +561,7 @@ end
 -- Sync
 --------------------------------------------------------------------------------
 
-function Karakeep:onSynchronizeKarakeep()
+function KaraKo:onSynchronizeKarako()
     if not self:isReady() then
         UIManager:show(InfoMessage:new{
             text = _("Set the server address, API key and download folder first."),
@@ -543,7 +576,7 @@ function Karakeep:onSynchronizeKarakeep()
     return true
 end
 
-function Karakeep:synchronize()
+function KaraKo:synchronize()
     local Trapper = require("ui/trapper")
     local api = self:getApi()
 
@@ -551,7 +584,7 @@ function Karakeep:synchronize()
 
     -- Upload first: an article archived now drops out of the list we are about
     -- to fetch, so we never re-download something we have just finished.
-    local archived = self:uploadStatuses(local_articles, true)
+    local archived, upload_failed = self:uploadStatuses(local_articles, true)
 
     Trapper:info(_("Fetching your Karakeep articles…"))
 
@@ -624,6 +657,10 @@ function Karakeep:synchronize()
     if failed > 0 then
         table.insert(lines, T(N_("%1 article could not be downloaded.", "%1 articles could not be downloaded.", failed), failed))
     end
+    if upload_failed > 0 then
+        table.insert(lines, T(N_("%1 finished article could not be archived, and will be retried next sync.",
+            "%1 finished articles could not be archived, and will be retried next sync.", upload_failed), upload_failed))
+    end
 
     UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
 end
@@ -633,7 +670,7 @@ end
 -- @treturn string|nil Error code.
 -- @treturn bool Whether the whole scope was seen, rather than cut off by the
 --   per-sync cap. Callers must not delete local files unless this is true.
-function Karakeep:fetchBookmarks(api)
+function KaraKo:fetchBookmarks(api)
     local bookmarks = {}
     local cursor = nil
 
@@ -668,13 +705,13 @@ end
 
 --- Is there anything worth putting on the device?
 -- Asset bookmarks (uploaded PDFs and images) and empty notes are skipped.
-function Karakeep:isReadable(bookmark)
+function KaraKo:isReadable(bookmark)
     local content = bookmark.content
     if not content then return false end
     return content.type == "link" or content.type == "text"
 end
 
-function Karakeep:downloadArticle(api, bookmark)
+function KaraKo:downloadArticle(api, bookmark)
     local Trapper = require("ui/trapper")
     local content = bookmark.content or {}
     local title = bookmark.title or content.title or content.url
@@ -693,7 +730,7 @@ function Karakeep:downloadArticle(api, bookmark)
     end
 
     if not body_html or body_html == "" then
-        logger.info("Karakeep: no readable content for", bookmark.id, content.url)
+        logger.info("KaraKo: no readable content for", bookmark.id, content.url)
         return false
     end
 
@@ -710,7 +747,7 @@ function Karakeep:downloadArticle(api, bookmark)
     })
 
     if not ok then
-        logger.warn("Karakeep: could not build EPUB for", bookmark.id, err)
+        logger.warn("KaraKo: could not build EPUB for", bookmark.id, err)
         return false
     end
 
@@ -718,19 +755,29 @@ function Karakeep:downloadArticle(api, bookmark)
 end
 
 --- Archive finished articles in Karakeep and push their highlights.
+--
+-- There is no upload queue, and deliberately so: "finished" and "highlighted"
+-- already live durably in KOReader's .sdr sidecar, which this reconciles
+-- against the server on every run. An upload that fails because the network
+-- dropped is simply retried next time, with no separate queue state that could
+-- drift from what is actually on disk. The one thing that needs saying out loud
+-- is when uploads did fail, so the counts below are reported rather than only
+-- logged.
+--
 -- @tparam table local_articles
 -- @tparam[opt=true] bool quiet
 -- @treturn number Articles archived.
-function Karakeep:uploadStatuses(local_articles, quiet)
+-- @treturn number Articles that should have been archived but could not be.
+function KaraKo:uploadStatuses(local_articles, quiet)
     if quiet == nil then quiet = true end
 
     local api = self:getApi()
-    if not api:isConfigured() then return 0 end
+    if not api:isConfigured() then return 0, 0 end
 
     -- Trapper:info() is a no-op outside a wrapped coroutine, so this is safe
     -- whether we were called from a sync or straight from the menu.
     local Trapper = require("ui/trapper")
-    local archived, highlights_sent, unresolved_total = 0, 0, 0
+    local archived, highlights_sent, unresolved_total, failed = 0, 0, 0, 0
     local examined, total = 0, 0
     for _ in pairs(local_articles) do total = total + 1 end
 
@@ -763,7 +810,10 @@ function Karakeep:uploadStatuses(local_articles, quiet)
                     local_articles[id] = nil
                 end
             else
-                logger.warn("Karakeep: could not archive", id)
+                -- Left on the device with its sidecar intact, so the next run
+                -- picks it up again.
+                failed = failed + 1
+                logger.warn("KaraKo: could not archive", id, "- will retry next sync")
             end
         end
     end
@@ -780,11 +830,15 @@ function Karakeep:uploadStatuses(local_articles, quiet)
             table.insert(lines, T(N_("%1 highlight could not be positioned in the article.",
                 "%1 highlights could not be positioned in the article.", unresolved_total), unresolved_total))
         end
+        if failed > 0 then
+            table.insert(lines, T(N_("%1 article could not be sent, and will be retried next sync.",
+                "%1 articles could not be sent, and will be retried next sync.", failed), failed))
+        end
         UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
         self:refreshFileManager()
     end
 
-    return archived
+    return archived, failed
 end
 
 --- Remove local articles that are no longer in the remote result.
@@ -792,7 +846,7 @@ end
 -- Only runs when the sync was not capped, because a capped sync cannot tell
 -- "archived elsewhere" apart from "did not fit in this page".
 -- @treturn number
-function Karakeep:processRemoteDeletes(local_articles, remote_ids)
+function KaraKo:processRemoteDeletes(local_articles, remote_ids)
     local count = 0
     for id, path in pairs(local_articles) do
         if not remote_ids[id] and not self:isFinished(path) then
@@ -811,7 +865,7 @@ end
 -- Events
 --------------------------------------------------------------------------------
 
-function Karakeep:onGoToKarakeepDirectory()
+function KaraKo:onGoToKarakoDirectory()
     if not self.directory then
         UIManager:show(InfoMessage:new{ text = _("No download folder is configured yet.") })
         return true
@@ -830,4 +884,4 @@ function Karakeep:onGoToKarakeepDirectory()
     return true
 end
 
-return Karakeep
+return KaraKo

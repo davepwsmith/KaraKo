@@ -6,7 +6,7 @@ readable content and assets, and pushing read status, tags and highlights back.
 
 See https://docs.karakeep.app/api/karakeep-api/ for the full API.
 
-@module koplugin.karakeep.api
+@module koplugin.karako.api
 ]]
 
 local JSON = require("json")
@@ -78,7 +78,7 @@ function KarakeepApi:call(method, path, opts)
             break
         end
 
-        logger.dbg("KarakeepApi: retrying", method, path, "after", result, code)
+        logger.dbg("KaraKoApi: retrying", method, path, "after", result, code)
         socket.sleep(2 ^ attempt)
     end
 
@@ -108,7 +108,7 @@ function KarakeepApi:_request(method, url, body_json, filepath, quiet)
     if filepath then
         sink_file = io.open(filepath, "w")
         if not sink_file then
-            logger.err("KarakeepApi: cannot open", filepath, "for writing")
+            logger.err("KaraKoApi: cannot open", filepath, "for writing")
             return false, "io_error"
         end
         request.sink = ltn12.sink.file(sink_file)
@@ -118,7 +118,7 @@ function KarakeepApi:_request(method, url, body_json, filepath, quiet)
         socketutil:set_timeout(self.block_timeout, self.total_timeout)
     end
 
-    logger.dbg("KarakeepApi:", method, url)
+    logger.dbg("KaraKoApi:", method, url)
 
     local code, resp_headers, status = socket.skip(1, http.request(request))
     socketutil:reset_timeout()
@@ -126,7 +126,7 @@ function KarakeepApi:_request(method, url, body_json, filepath, quiet)
     if resp_headers == nil then
         -- ltn12.sink.file closes the handle itself, so only clean up the file.
         if filepath then os.remove(filepath) end
-        logger.err("KarakeepApi: network error", status or code, url)
+        logger.err("KaraKoApi: network error", status or code, url)
         return false, "network_error"
     end
 
@@ -145,14 +145,14 @@ function KarakeepApi:_request(method, url, body_json, filepath, quiet)
             return true, decoded
         end
 
-        logger.err("KarakeepApi: response was not valid JSON:", content:sub(1, 200))
+        logger.err("KaraKoApi: response was not valid JSON:", content:sub(1, 200))
         return false, "json_error", code
     end
 
     if filepath then os.remove(filepath) end
 
     if not quiet then
-        logger.err("KarakeepApi: HTTP", code, status, url)
+        logger.err("KaraKoApi: HTTP", code, status, url)
     end
 
     return false, "http_error", code
@@ -261,10 +261,9 @@ function KarakeepApi:getReadableContent(id, format)
     return true, table.concat(chunks)
 end
 
---- Download an asset to a local file.
-function KarakeepApi:downloadAsset(asset_id, filepath)
-    return self:call("GET", "/assets/" .. asset_id, { filepath = filepath })
-end
+-- No /assets endpoint is used. Article images are fetched from their original
+-- URLs by epubbuilder.lua, which keeps the API token off third-party requests
+-- and means the API key needs no "Assets" scope at all.
 
 --- Update mutable bookmark fields, e.g. { archived = true }.
 function KarakeepApi:updateBookmark(id, fields)

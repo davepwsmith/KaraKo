@@ -7,7 +7,7 @@ only thing the two representations share is the highlighted text, so matching is
 done on text and is necessarily best-effort — see findTextOffsets() in
 articleutil.lua for the caveats.
 
-@module koplugin.karakeep.highlights
+@module koplugin.karako.highlights
 ]]
 
 local DocSettings = require("docsettings")
@@ -86,7 +86,7 @@ function Highlights.push(api, bookmark_id, path)
 
     local existing = fetchExisting(api, bookmark_id)
     if not existing then
-        logger.warn("Karakeep: cannot read existing highlights for", bookmark_id, "- skipping push")
+        logger.warn("KaraKo: cannot read existing highlights for", bookmark_id, "- skipping push")
         return 0, 0
     end
 
@@ -146,7 +146,7 @@ function Highlights.push(api, bookmark_id, path)
                 created = created + 1
                 existing[highlight.text] = true
             else
-                logger.warn("Karakeep: failed to create highlight for", bookmark_id)
+                logger.warn("KaraKo: failed to create highlight for", bookmark_id)
             end
         end
     end

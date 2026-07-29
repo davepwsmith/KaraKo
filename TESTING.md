@@ -30,7 +30,7 @@ That directory contains everything needed: `luajit`, `libs/libkoreader-cre.so`,
 `ffi/archiver.lua`, fonts, and a `plugins/` directory. Install the plugin with:
 
 ```sh
-cp -r /path/to/karako/karakeep.koplugin plugins/
+cp -r /path/to/karako/karako.koplugin plugins/
 ```
 
 ### Running the UI
@@ -50,13 +50,13 @@ Two messages are container noise and can be ignored: SDL's
 `XDG_RUNTIME_DIR is invalid or not set`, and `XIO: fatal IO error` when Xvfb is
 torn down at the end.
 
-Confirm the plugin loaded — the log line is `Plugin loaded karakeep`:
+Confirm the plugin loaded — the log line is `Plugin loaded karako`:
 
 ```sh
-./luajit reader.lua 2>&1 | grep -i karakeep
+./luajit reader.lua 2>&1 | grep -i karako
 ```
 
-It appears under **Tools → More tools → Karakeep**.
+It appears under **Tools → More tools → KaraKo**.
 
 ### Building from source instead
 
@@ -66,7 +66,7 @@ you. `kodev run` takes a device profile:
 ```sh
 git clone https://github.com/koreader/koreader && cd koreader
 ./kodev fetch-thirdparty && ./kodev build
-ln -s /path/to/karako/karakeep.koplugin \
+ln -s /path/to/karako/karako.koplugin \
       koreader-emulator-*/koreader/plugins/
 ./kodev run -s kobo-clara        # or kobo-forma, kobo-aura-one, kobo-h2o
 ```
@@ -109,7 +109,7 @@ the URL, and that an image which fails to download leaves no `<img>` behind.
 
 Verified against KOReader v2026.07:
 
-- The plugin loads (`Plugin loaded karakeep`) with `main.lua` initialising
+- The plugin loads (`Plugin loaded karako`) with `main.lua` initialising
   cleanly alongside 32 stock plugins.
 - Generated EPUBs open in `CreDocument`, render, and pass
   `validateAndFixToc(): TOC is fine`.

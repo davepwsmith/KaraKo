@@ -3,7 +3,7 @@
 Read your [Karakeep](https://karakeep.app) articles on a Kobo, via
 [KOReader](https://koreader.rocks).
 
-`karakeep.koplugin` syncs unread bookmarks onto the device as EPUBs, and pushes
+`karako.koplugin` syncs unread bookmarks onto the device as EPUBs, and pushes
 your read status and highlights back to Karakeep when you are done with them.
 
 It is modelled on KOReader's [`wallabag.koplugin`][wallabag], which solves the
@@ -27,37 +27,83 @@ same problem for a different read-it-later service.
 - KOReader installed on the device. Any KOReader version with `ffi/archiver` and
   `cre.getBalancedHTML` will do — that is anything from 2021 onwards.
 
+## API key scopes
+
+Karakeep lets you scope an API key per resource. The plugin needs five of them,
+and **None** for everything else — no Assets, Backups, Feeds, Prompts, Rules,
+Webhooks, or any Admin scope:
+
+| Resource | Access | Needed for |
+| --- | --- | --- |
+| **Bookmarks** | Read/write | Everything. Read to list and fetch articles; write to archive them |
+| **Highlights** | Read/write | Sending highlights back. Read first, to avoid duplicates |
+| **Lists** | Read | Only the "choose a list" picker |
+| **Tags** | Read | Only the "choose a tag" picker |
+| **User account** | Read | Only the `Save and test` button |
+| *everything else* | None | Never called |
+
+Two of these are not what you would guess, so they are worth stating plainly.
+Both were confirmed against Karakeep's own scope enforcement in
+`packages/trpc/index.ts`, where a tRPC query needs `read` and a mutation needs
+`readwrite` on whichever resource its router is scoped to:
+
+- **Syncing a list or a tag does not need the Lists or Tags scope.**
+  `GET /lists/{id}/bookmarks` and `GET /tags/{id}/bookmarks` both call
+  `api.bookmarks.getBookmarks` internally, so Bookmarks: Read covers them. Lists
+  and Tags are needed only so the settings menu can show you what to pick from.
+- **Tagging on archive needs Bookmarks: Read/write, not Tags: Read/write.**
+  `POST /bookmarks/{id}/tags` routes through `api.bookmarks.updateTags`.
+
+### Cutting it down further
+
+Each write scope maps to one feature, so you can grant less if you turn the
+matching feature off:
+
+| If you want | Grant |
+| --- | --- |
+| Downloads only, nothing written back | Bookmarks: **Read** |
+| …plus archive on finish, and tag on archive | Bookmarks: **Read/write** |
+| …plus highlights sent back | Highlights: **Read/write** |
+| …plus picking a list or tag in the menu | Lists: **Read**, Tags: **Read** |
+| …plus the connection test button | User account: **Read** |
+
+A key missing a scope fails that one call with `403 API key is missing required
+scope: <scope>`, which the log records — the rest of the sync carries on.
+
+Give the device its own key rather than reusing one, so you can revoke just that
+one if you lose the Kobo.
+
 ## Install
 
 Copy the plugin folder into KOReader's `plugins` directory:
 
 | Device | Destination |
 | --- | --- |
-| Kobo | `/mnt/onboard/.adds/koreader/plugins/karakeep.koplugin/` |
-| Kindle | `/mnt/us/koreader/plugins/karakeep.koplugin/` |
-| Desktop / emulator | `<koreader>/plugins/karakeep.koplugin/` |
+| Kobo | `/mnt/onboard/.adds/koreader/plugins/karako.koplugin/` |
+| Kindle | `/mnt/us/koreader/plugins/karako.koplugin/` |
+| Desktop / emulator | `<koreader>/plugins/karako.koplugin/` |
 
 ```sh
 git clone https://github.com/davepwsmith/karako
-cp -r karako/karakeep.koplugin /mnt/onboard/.adds/koreader/plugins/
+cp -r karako/karako.koplugin /mnt/onboard/.adds/koreader/plugins/
 ```
 
-Restart KOReader. The plugin appears under **Tools → More tools → Karakeep**
+Restart KOReader. The plugin appears under **Tools → More tools → KaraKo**
 (the hamburger menu in the file manager).
 
 ## Set up
 
-1. **Karakeep → Server.** Enter your server's base address (e.g.
+1. **KaraKo → Server.** Enter your server's base address (e.g.
    `https://karakeep.example.com`, or `http://192.168.1.10:3000` on a LAN) and
    your API key. `Save and test` reports whether the address and key work — a
    pasted `/api/v1` suffix is stripped for you.
-2. **Karakeep → Download folder.** Pick where articles should live. On a Kobo,
+2. **KaraKo → Download folder.** Pick where articles should live. On a Kobo,
    somewhere under `/mnt/onboard` keeps them visible in the native library too.
-3. **Karakeep → What to sync.** All unarchived bookmarks (the default), or a
+3. **KaraKo → What to sync.** All unarchived bookmarks (the default), or a
    single list or tag — the plugin fetches your lists and tags to choose from.
-4. **Karakeep → Synchronise now.**
+4. **KaraKo → Synchronise now.**
 
-You can bind *Synchronise Karakeep* to a gesture under
+You can bind *Synchronise KaraKo* to a gesture under
 **Settings → Gestures**.
 
 ## Settings
@@ -117,7 +163,7 @@ mapped onto the four Karakeep supports; anything else becomes yellow.
   exceeds *Articles per sync*, every run is capped, so this cleanup never
   happens until the backlog drops below the limit.
 - **The API key is stored in the clear** in
-  `koreader/settings/karakeep.lua`, as KOReader has no keystore. It is worth
+  `koreader/settings/karako.lua`, as KOReader has no keystore. It is worth
   giving the device its own key so you can revoke just that one.
 
 ## Optionally, an OPDS bridge

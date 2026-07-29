@@ -4,7 +4,7 @@ Pure helpers for the Karakeep plugin.
 This module deliberately has no KOReader dependencies so that it can be
 exercised by the specs in `spec/` with a plain Lua 5.1 interpreter.
 
-@module koplugin.karakeep.articleutil
+@module koplugin.karako.articleutil
 ]]
 
 local ArticleUtil = {}
