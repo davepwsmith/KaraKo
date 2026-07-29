@@ -29,24 +29,24 @@ same problem for a different read-it-later service.
 
 ## API key scopes
 
-Karakeep lets you scope an API key per resource. The plugin needs six of them,
-and **None** for everything else — no Backups, Feeds, Prompts, Rules, Webhooks,
+Karakeep lets you scope an API key per resource. The plugin touches six, and
+needs **None** for everything else — no Backups, Feeds, Prompts, Rules, Webhooks,
 or any Admin scope:
 
 | Resource | Access | Needed for |
 | --- | --- | --- |
 | **Bookmarks** | Read/write | Everything. Read to list and fetch articles; write to archive them |
-| **Assets** | Read | Article text, which Karakeep stores out of line above ~5 KB |
+| **Assets** | Read | Page archives, and a fallback for article text. Optional |
 | **Highlights** | Read/write | Sending highlights back. Read first, to avoid duplicates |
 | **Lists** | Read | Only the "choose a list" picker |
 | **Tags** | Read | Only the "choose a tag" picker |
 | **User account** | Read | Only the `Save and test` button |
 | *everything else* | None | Never called |
 
-**Assets: Read is not optional in practice.** Karakeep inlines an article's HTML
-only while it is under `HTML_CONTENT_SIZE_INLINE_THRESHOLD_BYTES`, which defaults
-to **5 KB** — most real articles are larger, so their text lives in an asset. See
-[Where article text comes from](#where-article-text-comes-from).
+**Assets: Read is the one you can skip.** Ordinary article text arrives inline
+under Bookmarks: Read, whatever its length. Assets: Read is needed only to read a
+saved page archive, and as a safety net when Karakeep fails to expand a large
+article itself — see [Where article text comes from](#where-article-text-comes-from).
 
 Two of these are not what you would guess, so they are worth stating plainly.
 Both were confirmed against Karakeep's own scope enforcement in
@@ -67,7 +67,8 @@ matching feature off:
 
 | If you want | Grant |
 | --- | --- |
-| Downloads only, nothing written back | Bookmarks: **Read**, Assets: **Read** |
+| Downloads only, nothing written back | Bookmarks: **Read** |
+| …plus saved page archives as a content source | Assets: **Read** |
 | …plus archive on finish, and tag on archive | Bookmarks: **Read/write** |
 | …plus highlights sent back | Highlights: **Read/write** |
 | …plus picking a list or tag in the menu | Lists: **Read**, Tags: **Read** |
@@ -246,17 +247,32 @@ Notes on how it behaves:
 Karakeep can hold the same page in several forms, so the plugin works down a
 list until one yields something. In order:
 
-1. **`htmlContent`** — the extracted article, inlined on the bookmark.
-2. **`contentAssetId`** — the same extracted article, stored as an asset.
-   Karakeep only inlines content below `HTML_CONTENT_SIZE_INLINE_THRESHOLD_BYTES`
-   (**5 KB** by default, despite a comment in its source saying 50 KB), so for
-   most real articles this is where the text actually is.
+1. **`htmlContent`** — the extracted article. This is the normal path and it
+   covers articles of any length; see the note below.
+2. **`contentAssetId`** — the same extracted article fetched directly as an
+   asset. A safety net for when Karakeep's own read of that asset failed.
 3. **`precrawledArchive`** — what a [SingleFile][singlefile] upload produced.
 4. **`fullPageArchive`** — Karakeep's own snapshot, when it made one.
 5. **`/bookmarks/{id}/content`** — served as markdown, so images and finer
-   formatting are lost converting back to HTML. A genuine last resort.
+   formatting are lost converting back to HTML. Only reached when a bookmark
+   has no extracted article at all — typically one that was never successfully
+   crawled.
 
 [singlefile]: https://github.com/gildas-lormeau/SingleFile
+
+### Long articles are not a special case
+
+Karakeep inlines an article's HTML in its database only while it is under
+`HTML_CONTENT_SIZE_INLINE_THRESHOLD_BYTES` (**5 KB** by default, despite a
+comment in `assetStorage.ts` saying 50 KB). Above that the column is null and
+the HTML becomes an asset.
+
+That is invisible over the API, though: asking with `includeContent=true` makes
+Karakeep hydrate `htmlContent` from that asset before it answers
+(`toZodSchema` → `getBookmarkHtmlContent` in `packages/trpc/models/bookmarks.ts`),
+so step 1 delivers the whole article whatever its size. Step 2 exists only
+because Karakeep swallows a failed asset read and returns null rather than an
+error.
 
 ### Why archives are a fallback, not the preference
 

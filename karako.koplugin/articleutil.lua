@@ -390,11 +390,12 @@ end
 
 --- Where an article's text might come from, best first.
 --
--- Karakeep stores readable content in one of two places. Below a size threshold
--- (5 KB by default, despite a comment in its source saying 50 KB) it is inlined
--- as `htmlContent`; at or above it, `htmlContent` is null and the same HTML is
--- an asset referenced by `contentAssetId`. Most real articles are over 5 KB, so
--- the asset is the common case, not the exception.
+-- `htmlContent` is the normal source and covers articles of any length. Karakeep
+-- inlines it in its database only below a size threshold (5 KB by default), but
+-- a request with includeContent=true hydrates the field from the asset before
+-- answering, so that split is invisible here. `contentAssetId` is a safety net
+-- for the case where Karakeep's own read of that asset fails: it swallows the
+-- error and returns null rather than failing the request.
 --
 -- The archives are a different kind of thing. `precrawledArchive` is what a
 -- SingleFile upload produced and `fullPageArchive` is Karakeep's own snapshot;
