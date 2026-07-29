@@ -81,6 +81,8 @@ Copy the plugin folder into KOReader's `plugins` directory:
 | --- | --- |
 | Kobo | `/mnt/onboard/.adds/koreader/plugins/karako.koplugin/` |
 | Kindle | `/mnt/us/koreader/plugins/karako.koplugin/` |
+| Flatpak | `~/.var/app/rocks.koreader.KOReader/config/koreader/plugins/karako.koplugin/` |
+| AppImage | `~/.config/koreader/plugins/karako.koplugin/` |
 | Desktop / emulator | `<koreader>/plugins/karako.koplugin/` |
 
 ```sh
@@ -90,6 +92,65 @@ cp -r karako/karako.koplugin /mnt/onboard/.adds/koreader/plugins/
 
 Restart KOReader. The plugin appears under **Tools → More tools → KaraKo**
 (the hamburger menu in the file manager).
+
+### Flatpak and AppImage
+
+These two do not use the `plugins` directory next to the application — that one
+is read-only under Flatpak. KOReader also scans a writable plugin directory
+inside its data directory, and that is where the plugin has to go:
+
+```sh
+mkdir -p ~/.var/app/rocks.koreader.KOReader/config/koreader/plugins
+cp -r karako/karako.koplugin ~/.var/app/rocks.koreader.KOReader/config/koreader/plugins/
+```
+
+`datastorage.lua` picks that path whenever `FLATPAK`, `APPIMAGE` or
+`KO_MULTIUSER` is set in the environment: the data directory becomes
+`$XDG_CONFIG_HOME/koreader`, which Flatpak redirects into
+`~/.var/app/rocks.koreader.KOReader/config`. Confirm the plugin was found with:
+
+```sh
+flatpak run rocks.koreader.KOReader 2>&1 | grep -iE "Looking for plugins|karako"
+```
+
+You want two lines — the directory being scanned, and `Plugin loaded karako`.
+
+One further Flatpak gotcha: the sandbox restricts filesystem access, so the
+**download folder must be somewhere KOReader can write**. Check what it is
+allowed to reach with `flatpak info --show-permissions rocks.koreader.KOReader`,
+and grant more if you need to:
+
+```sh
+flatpak override --user --filesystem=~/Books rocks.koreader.KOReader
+```
+
+## Seeing the log
+
+KOReader logs to standard output, so start it from a terminal:
+
+```sh
+flatpak run rocks.koreader.KOReader          # Flatpak
+./koreader-*.AppImage                        # AppImage
+```
+
+The default log level is `info`, which hides this plugin's `logger.dbg` lines —
+including every API request. Pass `-d` for debug, or `-d -v` for verbose:
+
+```sh
+flatpak run rocks.koreader.KOReader -d
+```
+
+It can also be turned on persistently in the UI, under
+**Help → Report a bug → Enable verbose logging**.
+
+Lines from this plugin are tagged `KaraKo:`, and HTTP requests `KaraKoApi:`:
+
+```sh
+flatpak run rocks.koreader.KOReader -d 2>&1 | grep -iE "karako"
+```
+
+Note that on desktop platforms nothing redirects output to `crash.log`, unlike
+on a Kobo or Kindle — stdout is the only place the log appears.
 
 ## Set up
 
