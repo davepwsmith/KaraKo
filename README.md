@@ -297,7 +297,7 @@ compose well, since its acquisition links carry the Karakeep bookmark ID
 
 ```sh
 make check  # syntax and accidental globals, every file
-make test   # 70 specs, any Lua 5.1
+make test   # 100 specs, any Lua 5.1
 ```
 
 `articleutil.lua` has no KOReader dependencies and carries the bulk of the fiddly

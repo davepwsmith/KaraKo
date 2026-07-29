@@ -4,7 +4,7 @@ Three layers, cheapest first. The first two run without a device.
 
 ```sh
 make check   # syntax + accidental globals, every file
-make test    # 70 specs, any Lua 5.1
+make test    # 100 specs, any Lua 5.1
 ```
 
 Then `tools/epubcheck.lua` against a real KOReader (below), which is the one
