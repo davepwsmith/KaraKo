@@ -320,7 +320,7 @@ function ArticleUtil.collectImages(html, max_images)
 
         local existing = by_src[src]
         if existing then
-            return string.format('<img src="%s" alt=""/>', ArticleUtil.escapeXml(existing))
+            return string.format('<img src="%s"/>', ArticleUtil.escapeXml(existing))
         end
 
         if #images >= max_images then return "" end
@@ -331,7 +331,9 @@ function ArticleUtil.collectImages(html, max_images)
         table.insert(images, { src = src, path = path })
         by_src[src] = path
 
-        return string.format('<img src="%s" alt=""/>', ArticleUtil.escapeXml(path))
+        -- No alt="": crengine's getBalancedHTML() rewrites an empty attribute
+        -- to a bare one ("alt"), which is not well-formed XML.
+        return string.format('<img src="%s"/>', ArticleUtil.escapeXml(path))
     end)
 
     return rewritten, images

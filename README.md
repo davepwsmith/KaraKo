@@ -136,13 +136,17 @@ compose well, since its acquisition links carry the Karakeep bookmark ID
 ## Development
 
 ```sh
-make test   # runs the specs with any Lua 5.1
-make check  # syntax check every file
+make check  # syntax and accidental globals, every file
+make test   # 70 specs, any Lua 5.1
 ```
 
-`articleutil.lua` has no KOReader dependencies and carries the bulk of the
-fiddly logic, so it is directly testable off-device. See [TESTING.md](TESTING.md)
-for how to exercise the rest against a real KOReader.
+`articleutil.lua` has no KOReader dependencies and carries the bulk of the fiddly
+logic, so it is directly testable off-device. EPUB assembly needs the real
+crengine and libarchive; `tools/epubcheck.lua` drives those headlessly against an
+extracted KOReader AppImage — no build required.
+
+See [TESTING.md](TESTING.md), which also lists what is verified and what still
+needs checking on a real Kobo.
 
 ## Licence
 

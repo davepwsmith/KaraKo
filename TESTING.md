@@ -1,79 +1,152 @@
 # Testing
 
-## What runs off-device
+Three layers, cheapest first. The first two run without a device.
 
 ```sh
-make test
+make check   # syntax + accidental globals, every file
+make test    # 70 specs, any Lua 5.1
 ```
 
-`articleutil.lua` has no KOReader dependencies, and `epubbuilder.lua`'s
-`markdownToHtml()` and `buildDocument()` only need its networking and logging
-stubbed. Between them that covers filename round-tripping, HTML sanitising,
-entity decoding, image collection, highlight text matching, query building and
-the markdown fallback — the parts most likely to be wrong.
+Then `tools/epubcheck.lua` against a real KOReader (below), which is the one
+that matters: EPUB assembly is the part most likely to be wrong, and it needs
+crengine and libarchive.
 
-`make check` runs `luac -p` over every file, and also greps the bytecode for
-`SETGLOBAL`, which catches the accidental globals that Lua otherwise fails on
-silently at runtime.
+## Getting a KOReader to test against
 
-## What does not
-
-Four things need a real KOReader and cannot be faked usefully:
-
-| Area | Why | How to exercise it |
-| --- | --- | --- |
-| `EpubBuilder.build()` | Needs crengine (`getBalancedHTML`) and libarchive | Sync one article, then open the EPUB |
-| `api.lua` | Needs LuaSocket and a live Karakeep | `Server → Save and test` |
-| `highlights.lua` | Reads real `.sdr` sidecars | Highlight, then `Send read status and highlights` |
-| Menus, Trapper, network | UI framework | By hand |
-
-## Using the KOReader emulator
-
-The emulator is far quicker to iterate against than a Kobo, and everything
-except device-specific paths behaves the same.
+**Do not build from source unless you need to.** KOReader's own docs note that
+if you only want to work on Lua frontend code — which is all this plugin is —
+you can extract the AppImage instead. That takes about a minute rather than the
+best part of an hour.
 
 ```sh
-git clone https://github.com/koreader/koreader
-cd koreader
-./kodev fetch-thirdparty
-./kodev build
-ln -s "$(pwd)/../karako/karakeep.koplugin" koreader-emulator-*/koreader/plugins/
-./kodev run
+# Pick the current tag from https://github.com/koreader/koreader/releases
+curl -LO https://github.com/koreader/koreader/releases/download/v2026.07/koreader-v2026.07-x86_64.AppImage
+chmod +x koreader-v2026.07-x86_64.AppImage
+./koreader-v2026.07-x86_64.AppImage --appimage-extract
+cd squashfs-root/usr/lib/koreader
 ```
 
-The plugin lands in **Tools → More tools → Karakeep**. Logs go to stdout; raise
-the level with `./kodev run -v` and look for lines tagged `Karakeep:` or
-`KarakeepApi:`.
+That directory contains everything needed: `luajit`, `libs/libkoreader-cre.so`,
+`ffi/archiver.lua`, fonts, and a `plugins/` directory. Install the plugin with:
 
-## Checks worth doing on a real device
+```sh
+cp -r /path/to/karako/karakeep.koplugin plugins/
+```
 
-The interesting failures are all on-device, so these are the ones that matter:
+### Running the UI
 
-1. **A large image-heavy article.** This is the main performance risk of building
-   EPUBs in Lua on a Kobo. Time it, and compare with *Embed images* off.
-2. **A malformed source page.** Find an article whose crawl produced ragged HTML
-   and confirm `getBalancedHTML()` copes and the EPUB still opens.
-3. **Highlight round trip.** Highlight a passage that appears twice in the
-   article and confirm the first-occurrence behaviour described in the README —
-   then one that appears once, and check the offsets land correctly in
-   Karakeep's web UI.
-4. **Interrupted sync.** Cancel mid-download and confirm nothing local is
-   deleted; the guard for this is `complete and not cancelled` in `synchronize()`.
-5. **Capped sync.** Set *Articles per sync* below your unread count and confirm
-   that articles beyond the cap are not treated as remotely deleted.
-6. **Archive from another device.** Archive something in Karakeep's web UI, then
-   sync, and confirm the unopened local copy is removed.
-7. **Self-signed certificate**, if your Karakeep is behind one. KOReader has its
-   own CA bundle and will refuse an unknown issuer; the failure surfaces as
+```sh
+./luajit reader.lua                 # file manager
+./luajit reader.lua path/to.epub    # straight into a document
+```
+
+Headless works too, which is useful over SSH or in CI:
+
+```sh
+xvfb-run -a -s "-screen 0 600x800x24" ./luajit reader.lua path/to.epub
+```
+
+Two messages are container noise and can be ignored: SDL's
+`XDG_RUNTIME_DIR is invalid or not set`, and `XIO: fatal IO error` when Xvfb is
+torn down at the end.
+
+Confirm the plugin loaded — the log line is `Plugin loaded karakeep`:
+
+```sh
+./luajit reader.lua 2>&1 | grep -i karakeep
+```
+
+It appears under **Tools → More tools → Karakeep**.
+
+### Building from source instead
+
+Worth it if you want the Kobo screen simulations, which the AppImage cannot give
+you. `kodev run` takes a device profile:
+
+```sh
+git clone https://github.com/koreader/koreader && cd koreader
+./kodev fetch-thirdparty && ./kodev build
+ln -s /path/to/karako/karakeep.koplugin \
+      koreader-emulator-*/koreader/plugins/
+./kodev run -s kobo-clara        # or kobo-forma, kobo-aura-one, kobo-h2o
+```
+
+`--simulate` accepts `kobo-forma`, `kobo-aura-one`, `kobo-clara`, `kobo-h2o`,
+`kindle-paperwhite`, `legacy-paperwhite`, `kindle` and `hidpi`; `-W`, `-H` and
+`-D` set width, height and DPI directly. This needs the full toolchain
+(SDL3 ≥ 3.2.12, meson, ninja, nasm and the rest — see KOReader's
+`doc/Building.md`), or you can use their premade Docker image from
+[koreader/virdevenv](https://github.com/koreader/virdevenv), which needs only
+Git and Docker.
+
+## tools/epubcheck.lua
+
+Drives `EpubBuilder.build()` against the real crengine and libarchive without
+starting the UI, and asserts on the result. 26 checks; exits non-zero on
+failure.
+
+```sh
+cd squashfs-root/usr/lib/koreader
+cp -r /path/to/karako/tools .
+./luajit tools/epubcheck.lua
+```
+
+To include the image checks, run the fixture server first — it serves a real
+PNG, a PNG behind a `.jpg` name, and an HTML error page where an image should
+be:
+
+```sh
+python3 tools/fixtures.py &                       # 127.0.0.1:8799
+KK_IMG_SERVER=http://127.0.0.1:8799/ ./luajit tools/epubcheck.lua
+```
+
+It covers the things that silently degrade rather than crash: that crengine
+actually balances the ragged HTML, that `<script>` and `onclick` are gone, that
+entities become UTF-8, that image media types come from the bytes rather than
+the URL, and that an image which fails to download leaves no `<img>` behind.
+
+## What is verified, and what is not
+
+Verified against KOReader v2026.07:
+
+- The plugin loads (`Plugin loaded karakeep`) with `main.lua` initialising
+  cleanly alongside 32 stock plugins.
+- Generated EPUBs open in `CreDocument`, render, and pass
+  `validateAndFixToc(): TOC is fine`.
+- `content.xhtml`, `content.opf`, `toc.ncx` and `container.xml` are all
+  well-formed XML.
+- Ragged HTML is balanced; images are fetched, sniffed and embedded, with
+  failures dropped cleanly.
+
+Still unverified, and worth doing on a real Kobo:
+
+1. **A large image-heavy article**, timed. This is the main performance risk of
+   building EPUBs in Lua on a Kobo. Compare with *Embed images* off.
+2. **`api.lua` against a live Karakeep** — every endpoint here is exercised only
+   against the OpenAPI spec, not a running server. Start with
+   `Server → Save and test`.
+3. **Highlight round trip.** Highlight a passage appearing twice and confirm the
+   first-occurrence behaviour in the README; then one appearing once, and check
+   the offsets land correctly in Karakeep's web UI.
+4. **Interrupted and capped syncs.** Cancel mid-download, and set *Articles per
+   sync* below your unread count; confirm nothing local is deleted either time.
+   The guard is `complete and not cancelled` in `synchronize()`.
+5. **Archive from another device**, then sync, and confirm the unopened local
+   copy is removed.
+6. **A self-signed certificate**, if your Karakeep uses one. KOReader has its own
+   CA bundle and will refuse an unknown issuer; it surfaces as
    `Could not reach the server.`
 
 ## Adding specs
 
-`spec/runner.lua` is a deliberately small `describe`/`it` harness — busted is not
+`spec/runner.lua` is a deliberately small `describe`/`it` harness. busted is not
 used because these modules must run under a plain Lua 5.1 interpreter, the
 dialect LuaJIT implements. Add a file to `spec/`, require it from `spec/all.lua`,
 and use `assertEqual`, `assertTrue`, `assertNil`, `assertMatch` and
 `assertNoMatch`.
 
 To cover a module that pulls in KOReader, stub what it needs via
-`package.preload` before requiring it, as `spec/epubbuilder_spec.lua` does.
+`package.preload` before requiring it, as `spec/epubbuilder_spec.lua` does. Note
+that `socketutil` drags in the whole device stack, which probes SDL and needs a
+display — `epubbuilder.lua` requires the networking modules lazily inside
+`fetchUrl()` for exactly this reason.

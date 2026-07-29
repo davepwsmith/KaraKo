@@ -10,10 +10,6 @@ container with ffi/archiver's zip writer.
 ]]
 
 local logger = require("logger")
-local socket = require("socket")
-local socketutil = require("socketutil")
-local http = require("socket.http")
-local ltn12 = require("ltn12")
 
 local ArticleUtil = require("articleutil")
 
@@ -39,7 +35,18 @@ td, th { border: 1px solid #999; padding: 0.2em 0.4em; }
 
 -- Fetch a remote image. Kept separate from the Karakeep client because these
 -- are third-party URLs that must not carry the API token.
+--
+-- The networking modules are required here rather than at the top of the file
+-- on purpose: socketutil pulls in KOReader's whole device stack, which probes
+-- SDL and needs a display. Requiring it lazily keeps this module loadable for
+-- EPUB assembly alone, which is what makes it testable outside a running
+-- KOReader (see TESTING.md).
 local function fetchUrl(url, block_timeout, total_timeout)
+    local socket = require("socket")
+    local socketutil = require("socketutil")
+    local http = require("socket.http")
+    local ltn12 = require("ltn12")
+
     local sink = {}
     socketutil:set_timeout(block_timeout or 10, total_timeout or 30)
 
@@ -309,20 +316,10 @@ function EpubBuilder.build(bookmark, filepath, opts)
 
     local document = EpubBuilder.buildDocument(bookmark, body_html)
 
-    -- crengine turns arbitrary crawler HTML into balanced XHTML. Without this,
-    -- a single unclosed <p> from the source site breaks the whole EPUB.
-    local balanced_ok, balanced = pcall(function()
-        local cre = require("libs/libkoreader-cre")
-        return cre.getBalancedHTML(document, 0x0)
-    end)
-    if balanced_ok and balanced and balanced ~= "" then
-        document = balanced
-    else
-        logger.warn("Karakeep: getBalancedHTML failed, writing unbalanced HTML for", bookmark.id)
-    end
-
+    -- Assemble the whole document before balancing it. getBalancedHTML() parses
+    -- a complete HTML document and returns nothing at all for a bare fragment,
+    -- so balancing the body on its own silently does nothing.
     local xhtml = table.concat({
-        [[<?xml version="1.0" encoding="UTF-8"?>]],
         [[<html xmlns="http://www.w3.org/1999/xhtml">]],
         "<head>",
         "<title>" .. ArticleUtil.escapeXml(title) .. "</title>",
@@ -332,6 +329,21 @@ function EpubBuilder.build(bookmark, filepath, opts)
         document,
         "</body></html>",
     }, "\n")
+
+    -- crengine turns arbitrary crawler HTML into balanced XHTML. Without this,
+    -- a single unclosed <p> from the source site breaks the whole EPUB.
+    local balanced_ok, balanced = pcall(function()
+        local cre = require("libs/libkoreader-cre")
+        return cre.getBalancedHTML(xhtml, 0x0)
+    end)
+    if balanced_ok and balanced and balanced ~= "" then
+        xhtml = balanced
+    else
+        logger.warn("Karakeep: getBalancedHTML failed, writing unbalanced HTML for", bookmark.id)
+    end
+
+    -- The XML declaration goes on afterwards: crengine does not emit one.
+    xhtml = [[<?xml version="1.0" encoding="UTF-8"?>]] .. "\n" .. xhtml
 
     local Archiver = require("ffi/archiver")
     local writer = Archiver.Writer:new{}
