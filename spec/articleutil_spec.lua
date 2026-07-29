@@ -271,6 +271,85 @@ describe("sniffImageType", function()
     end)
 end)
 
+describe("stripJsonNulls", function()
+    -- KOReader decodes JSON null to a function, which is truthy. Stand-in here.
+    local function jsonNull() end -- the value itself is the sentinel; never called
+
+    it("removes a null field so `or` falls through", function()
+        local bookmark = ArticleUtil.stripJsonNulls{ title = jsonNull, id = "a" }
+        assertNil(bookmark.title)
+        assertEqual(bookmark.title or "Untitled", "Untitled")
+    end)
+
+    it("reproduces the crash it exists to prevent", function()
+        -- Before the fix, a null title survived the `or` chain and reached
+        -- string formatting, which errors with "invalid replacement value".
+        local raw = { title = jsonNull }
+        assertTrue(raw.title, "a JSON null must be truthy for this test to mean anything")
+        local ok = pcall(string.format, "%s", raw.title)
+        assertTrue(not ok or type(raw.title) == "function")
+
+        local cleaned = ArticleUtil.stripJsonNulls{ title = jsonNull }
+        assertEqual(string.format("%s", cleaned.title or "Untitled"), "Untitled")
+    end)
+
+    it("recurses into nested objects", function()
+        local bookmark = ArticleUtil.stripJsonNulls{
+            id = "a",
+            content = { type = "link", url = "https://e.com", author = jsonNull },
+        }
+        assertNil(bookmark.content.author)
+        assertEqual(bookmark.content.url, "https://e.com")
+    end)
+
+    it("clears a null nextCursor so pagination terminates", function()
+        -- Left in place, the sentinel is truthy, so the paging loop would keep
+        -- going and send "function: 0x..." as the cursor.
+        local page = ArticleUtil.stripJsonNulls{ bookmarks = {}, nextCursor = jsonNull }
+        assertNil(page.nextCursor)
+    end)
+
+    it("recurses into arrays of objects", function()
+        local page = ArticleUtil.stripJsonNulls{
+            bookmarks = {
+                { id = "a", title = jsonNull },
+                { id = "b", title = "kept" },
+            },
+        }
+        assertEqual(#page.bookmarks, 2)
+        assertNil(page.bookmarks[1].title)
+        assertEqual(page.bookmarks[2].title, "kept")
+    end)
+
+    it("drops nulls inside an array without truncating it", function()
+        local out = ArticleUtil.stripJsonNulls{ list = { "a", jsonNull, "b" } }
+        assertEqual(#out.list, 2)
+        assertEqual(out.list[1], "a")
+        assertEqual(out.list[2], "b")
+    end)
+
+    it("leaves ordinary values alone", function()
+        local out = ArticleUtil.stripJsonNulls{
+            s = "x", n = 1, t = true, f = false, empty = {},
+        }
+        assertEqual(out.s, "x")
+        assertEqual(out.n, 1)
+        assertEqual(out.t, true)
+        assertEqual(out.f, false, "false must survive; it is not a null")
+        assertEqual(type(out.empty), "table")
+    end)
+
+    it("tolerates scalars and deep nesting", function()
+        assertEqual(ArticleUtil.stripJsonNulls("plain"), "plain")
+        assertNil(ArticleUtil.stripJsonNulls(jsonNull))
+
+        local deep, cursor = {}, nil
+        cursor = deep
+        for _ = 1, 40 do cursor.next = {}; cursor = cursor.next end
+        assertTrue(ArticleUtil.stripJsonNulls(deep), "must not overflow the stack")
+    end)
+end)
+
 describe("buildQuery", function()
     it("returns an empty string for no parameters", function()
         assertEqual(ArticleUtil.buildQuery({}), "")

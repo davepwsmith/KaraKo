@@ -142,7 +142,10 @@ function KarakeepApi:_request(method, url, body_json, filepath, quiet)
 
         local decoded_ok, decoded = pcall(JSON.decode, content)
         if decoded_ok and decoded then
-            return true, decoded
+            -- Every response goes through this: KOReader decodes JSON null to a
+            -- truthy sentinel, which would otherwise defeat every `or` fallback
+            -- in the plugin. See ArticleUtil.stripJsonNulls.
+            return true, ArticleUtil.stripJsonNulls(decoded)
         end
 
         logger.err("KaraKoApi: response was not valid JSON:", content:sub(1, 200))

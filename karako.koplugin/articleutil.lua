@@ -388,6 +388,54 @@ function ArticleUtil.sniffImageType(data)
     return nil
 end
 
+--- Replace JSON nulls with nil throughout a decoded response.
+--
+-- KOReader's JSON decoder represents null as a *function*, because a nil would
+-- simply vanish from the table and the key would be indistinguishable from one
+-- that was never sent. A function is truthy, so without this every
+-- `bookmark.title or fallback` silently keeps the sentinel instead of falling
+-- through, and it goes on to reach string formatting or a URL. Karakeep marks a
+-- lot of fields nullable -- title, note, author, htmlContent, datePublished and
+-- nextCursor among them -- so this is applied once to every decoded response.
+--
+-- A decoded JSON value can never legitimately be a function, so testing the type
+-- is enough to identify the sentinel.
+--
+-- @tparam any value Decoded JSON.
+-- @tparam[opt=0] number depth Recursion guard.
+-- @treturn any The same value with nulls removed.
+function ArticleUtil.stripJsonNulls(value, depth)
+    if type(value) ~= "table" then
+        if type(value) == "function" then return nil end
+        return value
+    end
+
+    depth = (depth or 0) + 1
+    if depth > 32 then return value end
+
+    if value[1] ~= nil then
+        -- Array-like: rebuild it, so that removing a null cannot leave a hole
+        -- that would silently truncate a later ipairs().
+        local out = {}
+        for _, item in ipairs(value) do
+            if type(item) ~= "function" then
+                table.insert(out, ArticleUtil.stripJsonNulls(item, depth))
+            end
+        end
+        return out
+    end
+
+    for key, item in pairs(value) do
+        if type(item) == "function" then
+            value[key] = nil
+        elseif type(item) == "table" then
+            value[key] = ArticleUtil.stripJsonNulls(item, depth)
+        end
+    end
+
+    return value
+end
+
 --- Percent-encode a string for use in a URL query value.
 -- @tparam string s
 -- @treturn string
