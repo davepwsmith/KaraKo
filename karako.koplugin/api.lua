@@ -266,9 +266,9 @@ end
 
 --- Download an asset to a local file.
 --
--- Used for readable HTML that Karakeep stored out of line (the common case for
--- anything over about 5 KB) and for page archives. A file rather than memory,
--- so the size can be checked before a possibly large archive is read in.
+-- Used for page archives, and to retry readable HTML that Karakeep stored out
+-- of line and then failed to expand for us. A file rather than memory, so the
+-- size can be checked before a possibly large archive is read in.
 --
 -- Article images are not fetched this way: epubbuilder.lua gets those from
 -- their original URLs, which keeps the API token off third-party requests.

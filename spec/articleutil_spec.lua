@@ -289,9 +289,10 @@ describe("contentSources", function()
         assertEqual(sources[1].kind, "inline")
     end)
 
-    it("uses the content asset, which is the common case over ~5 KB", function()
-        -- Karakeep nulls htmlContent and stores the same HTML as an asset once
-        -- it passes the inline threshold.
+    it("falls back to the content asset", function()
+        -- Karakeep normally expands this asset itself when asked with
+        -- includeContent=true. It is reachable when that expansion failed:
+        -- the list endpoint catches the error and returns a null htmlContent.
         local sources = ArticleUtil.contentSources(link{ contentAssetId = "a1" })
         assertEqual(sources[1].kind, "asset")
         assertEqual(sources[1].asset_id, "a1")
