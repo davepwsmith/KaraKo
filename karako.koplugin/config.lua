@@ -35,6 +35,7 @@ Config.SCHEMA = {
     articles_per_sync = "number",
     max_images = "number",
     max_archive_mb = "number",
+    auto_sync_interval = "number",
 
     download_images = "boolean",
     prefer_archive = "boolean",
@@ -43,6 +44,7 @@ Config.SCHEMA = {
     archive_abandoned = "boolean",
     delete_local_after_archive = "boolean",
     sync_highlights = "boolean",
+    auto_sync = "boolean",
 }
 
 local TRUE_WORDS = { ["true"] = true, yes = true, on = true, ["1"] = true }

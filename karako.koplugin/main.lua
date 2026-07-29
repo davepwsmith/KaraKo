@@ -66,8 +66,53 @@ function KaraKo:init()
     self.settings = self:openSettings()
     self:loadSettings()
     self:applyConfigFile()
+    self:setupAutoSync()
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
+end
+
+--- Attach or detach the network event handler.
+--
+-- Following kosync.koplugin: the handler exists as a field only while the
+-- setting is on, so nothing is dispatched at all when it is off. Called again
+-- whenever the setting changes.
+function KaraKo:setupAutoSync()
+    self.onNetworkConnected = self.auto_sync and self._onNetworkConnected or nil
+end
+
+--- Sync when Wi-Fi comes up.
+--
+-- Only ever reacts to a connection the user made for their own reasons; it
+-- never turns the radio on, which would be a poor trade for battery on a device
+-- that is asleep most of the time.
+function KaraKo:_onNetworkConnected()
+    if not self:isReady() then return end
+
+    local now = os.time()
+    local interval = (self.auto_sync_interval or 30) * 60
+    if self.last_auto_sync and (now - self.last_auto_sync) < interval then
+        logger.dbg("KaraKo: auto-sync skipped,", now - self.last_auto_sync, "s since the last one")
+        return
+    end
+
+    -- Let the connection settle before using it.
+    UIManager:scheduleIn(2, function()
+        self.last_auto_sync = os.time()
+        self.settings:saveSetting("last_auto_sync", self.last_auto_sync)
+
+        if self.ui and self.ui.document then
+            -- Mid-read. Push read status and highlights only: that is the half
+            -- which goes stale on the server, and it needs no progress UI, so
+            -- it will not interrupt reading. Downloads wait until you are out
+            -- of the document.
+            logger.info("KaraKo: auto-sync (upload only, document open)")
+            self:uploadStatuses(self:getLocalArticles(), true)
+        else
+            logger.info("KaraKo: auto-sync (full)")
+            local Trapper = require("ui/trapper")
+            Trapper:wrap(function() self:synchronize(true) end)
+        end
+    end)
 end
 
 --- Log which copy of the plugin is actually running.
@@ -196,6 +241,10 @@ function KaraKo:loadSettings()
     self.delete_local_after_archive = self.settings:readSetting("delete_local_after_archive", true)
 
     self.sync_highlights = self.settings:readSetting("sync_highlights", true)
+
+    self.auto_sync = self.settings:readSetting("auto_sync", false)
+    self.auto_sync_interval = self.settings:readSetting("auto_sync_interval", 30)
+    self.last_auto_sync = self.settings:readSetting("last_auto_sync")
 end
 
 function KaraKo:onFlushSettings()
@@ -217,6 +266,8 @@ function KaraKo:onFlushSettings()
         self.settings:saveSetting("archive_tag", self.archive_tag)
         self.settings:saveSetting("delete_local_after_archive", self.delete_local_after_archive)
         self.settings:saveSetting("sync_highlights", self.sync_highlights)
+        self.settings:saveSetting("auto_sync", self.auto_sync)
+        self.settings:saveSetting("auto_sync_interval", self.auto_sync_interval)
         self.settings:flush()
     end
 end
@@ -317,6 +368,40 @@ Either way, an archive is used as a fallback when no extracted article exists.]]
                 checked_func = function() return self.prefer_archive end,
                 callback = function() self.prefer_archive = not self.prefer_archive end,
                 separator = true,
+            },
+            {
+                text = _("Sync when Wi-Fi connects"),
+                help_text = _([[
+Syncs when you turn Wi-Fi on, never by turning it on itself.
+
+While you are reading, only read status and highlights are sent, so a sync cannot interrupt you. A full sync, including downloads, runs when no document is open.]]),
+                checked_func = function() return self.auto_sync end,
+                callback = function()
+                    self.auto_sync = not self.auto_sync
+                    self:setupAutoSync()
+                end,
+            },
+            {
+                text_func = function()
+                    return T(_("Sync at most every: %1 min"), self.auto_sync_interval)
+                end,
+                enabled_func = function() return self.auto_sync end,
+                keep_menu_open = true,
+                separator = true,
+                callback = function(touchmenu_instance)
+                    UIManager:show(SpinWidget:new{
+                        title_text = _("Minimum time between automatic syncs"),
+                        value = self.auto_sync_interval,
+                        value_min = 5,
+                        value_max = 720,
+                        value_step = 5,
+                        value_hold_step = 30,
+                        callback = function(spin)
+                            self.auto_sync_interval = spin.value
+                            if touchmenu_instance then touchmenu_instance:updateItems() end
+                        end,
+                    })
+                end,
             },
             {
                 text = _("When an article is finished"),
@@ -747,7 +832,7 @@ function KaraKo:onSynchronizeKarako()
     return true
 end
 
-function KaraKo:synchronize()
+function KaraKo:synchronize(quiet)
     local Trapper = require("ui/trapper")
     local api = self:getApi()
 
@@ -845,7 +930,13 @@ function KaraKo:synchronize()
             "%1 finished articles could not be archived, and will be retried next sync.", upload_failed), upload_failed))
     end
 
-    UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
+    if quiet then
+        -- An automatic sync should not put a modal in front of the user.
+        local Notification = require("ui/widget/notification")
+        UIManager:show(Notification:new{ text = table.concat(lines, " ") })
+    else
+        UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
+    end
 end
 
 --- Fetch bookmarks for the configured scope, following pagination.

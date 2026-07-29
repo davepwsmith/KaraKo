@@ -19,6 +19,7 @@ same problem for a different read-it-later service.
 - Archives an article in Karakeep once you finish it, optionally tagging it and
   deleting the local copy.
 - Sends the highlights you make in KOReader back to Karakeep.
+- Optionally syncs when Wi-Fi connects, without interrupting your reading.
 - Cleans up local copies of articles you archived elsewhere.
 
 ## Requirements
@@ -155,7 +156,7 @@ quickest way to catch a stale install — the line numbers in a stack trace will
 not tell you:
 
 ```
-INFO  KaraKo: version 0.3.0, main.lua modified 2026-07-29 12:25:28, loaded from …/plugins/karako.koplugin
+INFO  KaraKo: version 0.4.0, main.lua modified 2026-07-29 12:25:28, loaded from …/plugins/karako.koplugin
 ```
 
 If that timestamp is older than your last `cp`, KOReader is running the previous
@@ -240,7 +241,9 @@ Notes on how it behaves:
 | Archive when abandoned | Off | Treat "abandoned" as done |
 | Also add a tag | Off | e.g. `read-on-kobo`, created if it does not exist |
 | Delete the local copy once archived | On | Off keeps finished articles on device |
-| Send highlights to Karakeep | On | See the caveat below |
+| Send highlights to Karakeep | On | Create-only; see the caveats below |
+| Sync when Wi-Fi connects | Off | Reacts to the network coming up; never turns it on |
+| Sync at most every | 30 min | Floor between automatic syncs |
 
 ## Where article text comes from
 
@@ -296,6 +299,65 @@ awkward page layout, say — and your archive is the only complete copy left.
 **KaraKo → Prefer the saved page archive** flips the order if you would rather
 have the whole page. Archives are capped at 4 MB (`max_archive_mb`); anything
 larger is skipped with a warning rather than risking the device's memory.
+
+## Automatic syncing
+
+Off by default. **KaraKo → Sync when Wi-Fi connects** reacts to the network
+coming up — it never turns the radio on itself, which would be a bad trade on a
+device that spends most of its life asleep.
+
+What it does depends on what you are doing:
+
+- **Reading a document** — sends read status and highlights only. That is the
+  half that goes stale on the server, it needs no progress dialogs, and so it
+  cannot interrupt you. Downloads wait.
+- **In the file manager** — a full sync, reporting to a transient notification
+  rather than a modal.
+
+**Sync at most every** (default 30 minutes) stops a flaky connection from
+syncing repeatedly. Manual *Synchronise now* ignores the limit.
+
+Whether to bother is a fair question. The plugin is designed so that nothing is
+lost by syncing late: read status and highlights live durably in KOReader's
+`.sdr` sidecars and are reconciled against the server on every run, so a sync
+you never got round to is caught by the next one. Automatic syncing buys
+timeliness, not correctness. If you sync manually often enough to keep the
+device stocked, manual is perfectly sound.
+
+## What syncs which way, and what happens on a conflict
+
+There is no conflict *resolution* here, and it is worth being plain about that
+rather than implying more than the plugin does.
+
+| Thing | Direction | On conflict |
+| --- | --- | --- |
+| Article content | Karakeep → device | Re-downloaded only if missing locally |
+| Finished / read | device → Karakeep | Device wins. Un-archiving in Karakeep while the local copy is finished re-archives it on the next sync |
+| Archived elsewhere | Karakeep → device | Local copy deleted, **but only if you never opened it** |
+| Highlights | device → Karakeep | Create-only, matched by text. See below |
+| Reading position | neither | Not synced at all — that is [KOSync][kosync]'s job, between KOReader devices |
+| Tags, title, notes | Karakeep → device | Read at download time; later edits do not reach an already-downloaded copy |
+
+[kosync]: https://github.com/koreader/koreader/tree/master/plugins/kosync.koplugin
+
+### Highlights specifically
+
+Highlights are pushed one way and never deleted or updated, and the matching is
+by text because nothing else is shared between the two sides. The consequences
+are worth knowing:
+
+- **Deleting a highlight in KOReader does not delete it in Karakeep.**
+- **Deleting a highlight in Karakeep brings it back.** It is still in the local
+  sidecar, and the next sync sees it missing from the server and recreates it.
+  To be rid of one, delete it on the device as well.
+- **Editing a highlight's text in Karakeep creates a duplicate**, because the
+  local text no longer matches anything on the server.
+- **Editing only the note in KOReader changes nothing remotely** — the text
+  still matches, so the highlight is treated as already present.
+- Highlighting the same passage twice on the device sends it once.
+
+If any of that bothers you, **KaraKo → Send highlights to Karakeep** turns the
+whole thing off and nothing is written.
 
 ## How highlights are matched
 
