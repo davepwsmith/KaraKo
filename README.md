@@ -132,6 +132,34 @@ and grant more if you need to:
 flatpak override --user --filesystem=~/Books rocks.koreader.KOReader
 ```
 
+## If a sync downloads nothing
+
+The most common cause is the download folder. Before fetching anything, KaraKo
+now checks that the folder exists — creating it if not — and that it can
+actually write there, and says so plainly if it cannot. Previously an unwritable
+folder surfaced only as every article failing to build, one line at a time, deep
+inside the zip writer.
+
+Under Flatpak this is the likely default rather than an edge case: the sandbox
+reaches very little of your filesystem. Check what it is allowed:
+
+```sh
+flatpak info --show-permissions rocks.koreader.KOReader
+flatpak override --user --filesystem=~/Books rocks.koreader.KOReader
+```
+
+Anywhere under the data directory itself always works, because KOReader owns it:
+
+```
+~/.var/app/rocks.koreader.KOReader/config/koreader/karako/
+```
+
+On a Kobo, somewhere under `/mnt/onboard` is both writable and visible to the
+native library.
+
+If the folder is fine and articles still fail, the sync summary now names the
+first reason, and the log has one line per failure tagged `KaraKo:`.
+
 ## Seeing the log
 
 KOReader logs to standard output, so start it from a terminal:
@@ -156,7 +184,7 @@ quickest way to catch a stale install — the line numbers in a stack trace will
 not tell you:
 
 ```
-INFO  KaraKo: version 0.4.0, main.lua modified 2026-07-29 12:25:28, loaded from …/plugins/karako.koplugin
+INFO  KaraKo: version 0.5.0, main.lua modified 2026-07-29 12:25:28, loaded from …/plugins/karako.koplugin
 ```
 
 If that timestamp is older than your last `cp`, KOReader is running the previous
@@ -217,88 +245,18 @@ On Flatpak the data directory is
 
 Notes on how it behaves:
 
-- Settings the file names are applied **at every start** and override the menu,
-  which is what makes it declarative — you can keep it with your dotfiles.
-  Delete a line to hand that setting back to the menu.
-- Anything the file leaves out stays under the menu's control.
+- The file **seeds** settings the first time KaraKo runs. They then appear in the
+  menus like any other setting, and **whatever you set in the menus wins** from
+  that point on.
+- Editing the file later does nothing by itself. Use **Settings file → Reload it
+  now** to pull the changes in, which overwrites the matching settings.
+- Anything the file leaves out is under the menu's control from the start.
 - Values are taken literally to end of line, so URLs and tokens need no quoting.
   `key: value` works as well as `key = value`; `#` and `;` start a comment;
   booleans accept `true/false`, `yes/no`, `on/off`, `1/0`.
 - A misspelled setting is **reported in the log**, not silently ignored.
 - The file holds your API key in plain text. Keep it readable only by you, and
   give the device its own key so it can be revoked on its own.
-
-## Settings
-
-| Setting | Default | Notes |
-| --- | --- | --- |
-| What to sync | All unread | All unarchived bookmarks, or one list or tag |
-| Articles per sync | 30 | Fetches the most recent unread articles, up to this many |
-| Embed images | On | Off gives much smaller files and faster syncs |
-| Prefer the saved page archive | Off | Use the whole-page archive instead of the extracted article |
-| Archive it in Karakeep | On | When you mark an article as finished |
-| Archive when 100% read | On | Reaching the last page counts as finished |
-| Archive when abandoned | Off | Treat "abandoned" as done |
-| Also add a tag | Off | e.g. `read-on-kobo`, created if it does not exist |
-| Delete the local copy once archived | On | Off keeps finished articles on device |
-| Send highlights to Karakeep | On | Create-only; see the caveats below |
-| Sync when Wi-Fi connects | Off | Reacts to the network coming up; never turns it on |
-| Sync at most every | 30 min | Floor between automatic syncs |
-
-## Where article text comes from
-
-Karakeep can hold the same page in several forms, so the plugin works down a
-list until one yields something. In order:
-
-1. **`htmlContent`** — the extracted article. This is the normal path and it
-   covers articles of any length; see the note below.
-2. **`contentAssetId`** — the same extracted article fetched directly as an
-   asset. A safety net for when Karakeep's own read of that asset failed.
-3. **`precrawledArchive`** — what a [SingleFile][singlefile] upload produced.
-4. **`fullPageArchive`** — Karakeep's own snapshot, when it made one.
-5. **`/bookmarks/{id}/content`** — served as markdown, so images and finer
-   formatting are lost converting back to HTML. Only reached when a bookmark
-   has no extracted article at all — typically one that was never successfully
-   crawled.
-
-[singlefile]: https://github.com/gildas-lormeau/SingleFile
-
-### Long articles are not a special case
-
-Karakeep inlines an article's HTML in its database only while it is under
-`HTML_CONTENT_SIZE_INLINE_THRESHOLD_BYTES` (**5 KB** by default, despite a
-comment in `assetStorage.ts` saying 50 KB). Above that the column is null and
-the HTML becomes an asset.
-
-That is invisible over the API, though: asking with `includeContent=true` makes
-Karakeep hydrate `htmlContent` from that asset before it answers
-(`toZodSchema` → `getBookmarkHtmlContent` in `packages/trpc/models/bookmarks.ts`),
-so step 1 delivers the whole article whatever its size. Step 2 exists only
-because Karakeep swallows a failed asset read and returns null rather than an
-error.
-
-### Why archives are a fallback, not the preference
-
-If you save paywalled pages with SingleFile, it is tempting to have the plugin
-read those archives directly. It normally should not, for two reasons:
-
-- **Your archive is already the source.** When a bookmark has a precrawled
-  archive, Karakeep's crawler skips fetching the URL and runs *the archive*
-  through its readability extraction instead. So the text of your SingleFile
-  capture, paywall and all, has already become `htmlContent`/`contentAssetId`
-  before the plugin ever sees the bookmark. Steps 1 and 2 give you that content
-  with none of the drawbacks below.
-- **An archive is the whole page.** Navigation, sidebars, cookie banners,
-  related-article rails and inlined CSS all come with it, and it can run to
-  several megabytes. On a Kobo that is slower to build and considerably worse to
-  read than the extracted article.
-
-So steps 3 and 4 exist for the case where extraction genuinely failed — an
-awkward page layout, say — and your archive is the only complete copy left.
-
-**KaraKo → Prefer the saved page archive** flips the order if you would rather
-have the whole page. Archives are capped at 4 MB (`max_archive_mb`); anything
-larger is skipped with a warning rather than risking the device's memory.
 
 ## Automatic syncing
 

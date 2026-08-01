@@ -3,8 +3,9 @@ Optional plain-text configuration file.
 
 Typing a Karakeep API key on an e-reader keyboard is miserable, so settings can
 instead be dropped in a file and picked up at startup. Keys present in the file
-win over anything set through the menu, which makes the file declarative: you
-can keep it with your dotfiles and know what the device is running.
+seed the settings on first run, and are visible in the menus afterwards. What
+you then change in the menus wins: the file is not re-read unless you ask for it
+with "Reload it now".
 
     # ~/.config/koreader/karako.conf
     server_url = https://karakeep.example.com
@@ -138,9 +139,9 @@ function Config.template()
     return table.concat({
         "# KaraKo settings. Lines starting with # are ignored.",
         "#",
-        "# Anything set here is applied every time KOReader starts and overrides",
-        "# the same setting in the menu, so delete a line to control it from the",
-        "# menu instead.",
+        "# These seed KaraKo's settings the first time it runs, and then appear",
+        "# in its menus. Changing a setting in the menu wins from then on; this",
+        "# file is only read again if you choose \"Reload it now\".",
         "#",
         "# This file contains your API key in plain text. Keep it readable only",
         "# by you, and give the device its own key so it can be revoked alone.",

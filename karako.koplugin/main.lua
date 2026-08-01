@@ -64,8 +64,11 @@ end
 function KaraKo:init()
     self:logBuild()
     self.settings = self:openSettings()
+    -- Before loadSettings(): a setting read with a default is written back as
+    -- that default, so after it nothing looks unset and there is no gap left to
+    -- seed.
+    self:seedFromConfigFile()
     self:loadSettings()
-    self:applyConfigFile()
     self:setupAutoSync()
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
@@ -156,19 +159,60 @@ function KaraKo:findConfigFile()
     end
 end
 
---- Apply a config file over the stored settings.
+--- Seed settings from a config file, filling only what is not already set.
 --
--- Settings the file names win, every start, which is what makes the file
--- declarative. Settings it leaves out stay under the menu's control.
+-- The file is a starting point, not an authority: it supplies a value the first
+-- time, that value then shows up in the menus like any other, and anything you
+-- change there wins from then on. Editing the file later does nothing on its
+-- own — use "Reload it now" to pull it in.
 --
--- @treturn string|nil Path applied.
+-- @treturn string|nil Path found.
 -- @treturn table Problems found in the file.
-function KaraKo:applyConfigFile()
+-- @treturn number How many settings were actually seeded.
+function KaraKo:seedFromConfigFile()
     local path = self:findConfigFile()
-    if not path then return nil, {} end
+    if not path then return nil, {} , 0 end
+
+    self.config_path = path
 
     local values, problems = Config.read(path)
-    if not values then return nil, problems end
+    if not values then return path, problems, 0 end
+
+    local seeded, kept = 0, 0
+    for key, value in pairs(values) do
+        if self.settings:has(key) then
+            kept = kept + 1 -- already set on the device, which wins
+        else
+            self.settings:saveSetting(key, value)
+            seeded = seeded + 1
+        end
+    end
+
+    if seeded > 0 then self.settings:flush() end
+
+    logger.info(string.format(
+        "KaraKo: seeded %d setting(s) from %s; %d already set on the device and left alone",
+        seeded, path, kept))
+    for _, problem in ipairs(problems) do
+        logger.warn("KaraKo: " .. path .. ": " .. problem)
+    end
+
+    return path, problems, seeded
+end
+
+--- Apply every value in the config file over the current settings.
+-- Only ever called from "Reload it now", where overriding is what was asked for.
+-- @treturn string|nil Path applied.
+-- @treturn table Problems.
+-- @treturn number How many settings were applied.
+function KaraKo:reloadConfigFile()
+    local path = self:findConfigFile()
+    if not path then return nil, {}, 0 end
+
+    self.config_path = path
+
+    local values, problems = Config.read(path)
+    if not values then return path, problems, 0 end
 
     local applied = 0
     for key, value in pairs(values) do
@@ -176,18 +220,15 @@ function KaraKo:applyConfigFile()
         applied = applied + 1
     end
 
-    if applied > 0 then
-        -- Persist, so the settings survive the file being removed later.
-        self:onFlushSettings()
-    end
+    self:onFlushSettings()
+    self:setupAutoSync()
 
-    logger.info("KaraKo: applied", applied, "settings from", path)
+    logger.info("KaraKo: reloaded", applied, "settings from", path)
     for _, problem in ipairs(problems) do
         logger.warn("KaraKo: " .. path .. ": " .. problem)
     end
 
-    self.config_path = path
-    return path, problems
+    return path, problems, applied
 end
 
 --- Open our settings, migrating from the name an earlier build used.
@@ -325,10 +366,15 @@ function KaraKo:addToMainMenu(menu_items)
             },
             {
                 text_func = function()
-                    if self.config_path then return _("Settings file: in use") end
+                    if self.config_path then return _("Settings file: found") end
                     return _("Settings file: none")
                 end,
-                help_text = _("Set up KaraKo from a text file instead of typing an API key on the device."),
+                help_text = _([[
+Set up KaraKo from a text file instead of typing an API key on the device.
+
+The file seeds these settings the first time KaraKo runs. They then appear in these menus like any other, and whatever you set here wins from that point on.
+
+Editing the file later does nothing by itself -- choose "Reload it now" to pull the changes in.]]),
                 separator = true,
                 keep_menu_open = true,
                 sub_item_table_func = function() return self:configFileMenu() end,
@@ -571,15 +617,17 @@ function KaraKo:configFileMenu()
         },
         {
             text = _("Reload it now"),
+            help_text = _("Re-reads the file and overwrites the matching settings here. Use this after editing it."),
             keep_menu_open = true,
             callback = function(touchmenu_instance)
-                local path, problems = self:applyConfigFile()
+                local path, problems, applied = self:reloadConfigFile()
 
                 local text
                 if not path then
                     text = _("No settings file found.")
                 else
-                    text = T(_("Loaded settings from:\n%1"), path)
+                    text = T(N_("Applied %1 setting from:\n%2",
+                        "Applied %1 settings from:\n%2", applied), applied, path)
                     if #problems > 0 then
                         text = text .. "\n\n" .. table.concat(problems, "\n")
                     end
@@ -832,9 +880,60 @@ function KaraKo:onSynchronizeKarako()
     return true
 end
 
+--- Make sure the download folder exists and can actually be written to.
+--
+-- Without this, an unwritable folder shows up only as every article failing to
+-- build, one confusing line at a time, because the failure surfaces deep inside
+-- the zip writer. Under Flatpak an unwritable folder is the likely default
+-- rather than an edge case: the sandbox grants access to very little.
+--
+-- @treturn bool ok
+-- @treturn string|nil Message explaining what is wrong.
+function KaraKo:checkDirectory()
+    local dir = self.directory
+
+    if not dir or dir == "" then
+        return false, _("No download folder is set.")
+    end
+
+    if not util.directoryExists(dir) then
+        util.makePath(dir)
+        if not util.directoryExists(dir) then
+            return false, T(_("The download folder does not exist, and could not be created:\n\n%1"), dir)
+        end
+        logger.info("KaraKo: created download folder", dir)
+    end
+
+    local probe = ffiUtil.joinPath(dir, ".karako-write-test")
+    local handle = io.open(probe, "w")
+    if not handle then
+        return false, T(_([[
+Cannot write to the download folder:
+
+%1
+
+If KOReader is running as a Flatpak, the sandbox may not reach that folder. Check with:
+flatpak info --show-permissions rocks.koreader.KOReader]]), dir)
+    end
+
+    handle:write("ok")
+    handle:close()
+    os.remove(probe)
+
+    return true
+end
+
 function KaraKo:synchronize(quiet)
     local Trapper = require("ui/trapper")
     local api = self:getApi()
+
+    local writable, problem = self:checkDirectory()
+    if not writable then
+        Trapper:reset()
+        logger.err("KaraKo: download folder unusable:", self.directory)
+        UIManager:show(InfoMessage:new{ text = problem })
+        return
+    end
 
     local local_articles = self:getLocalArticles()
 
@@ -870,6 +969,7 @@ function KaraKo:synchronize(quiet)
 
     local downloaded, failed, skipped = 0, 0, 0
     local cancelled = false
+    local first_failure
 
     for index, bookmark in ipairs(remote) do
         if local_articles[bookmark.id] then
@@ -887,10 +987,12 @@ function KaraKo:synchronize(quiet)
                 break
             end
 
-            if self:downloadArticle(api, bookmark) then
+            local built, reason = self:downloadArticle(api, bookmark)
+            if built then
                 downloaded = downloaded + 1
             else
                 failed = failed + 1
+                first_failure = first_failure or reason
             end
         end
     end
@@ -924,6 +1026,9 @@ function KaraKo:synchronize(quiet)
     end
     if failed > 0 then
         table.insert(lines, T(N_("%1 article could not be downloaded.", "%1 articles could not be downloaded.", failed), failed))
+        if first_failure then
+            table.insert(lines, T(_("First reason: %1"), first_failure))
+        end
     end
     if upload_failed > 0 then
         table.insert(lines, T(N_("%1 finished article could not be archived, and will be retried next sync.",
@@ -1076,7 +1181,7 @@ function KaraKo:downloadArticle(api, bookmark)
 
     if not body_html or body_html == "" then
         logger.info("KaraKo: no readable content for", bookmark.id, content.url)
-        return false
+        return false, _("no readable content")
     end
 
     local filename = ArticleUtil.buildFilename(bookmark.id, title)
@@ -1092,8 +1197,8 @@ function KaraKo:downloadArticle(api, bookmark)
     })
 
     if not ok then
-        logger.warn("KaraKo: could not build EPUB for", bookmark.id, err)
-        return false
+        logger.err("KaraKo: could not build EPUB for", bookmark.id, "at", filepath, "-", tostring(err))
+        return false, tostring(err)
     end
 
     return true
