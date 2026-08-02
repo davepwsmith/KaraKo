@@ -92,7 +92,23 @@ one if you lose the Kobo.
 
 ## Install
 
-Copy the plugin folder into KOReader's `plugins` directory:
+Download `karako.koplugin-vX.Y.Z.zip` from the
+[latest release](https://github.com/davepwsmith/karako/releases/latest) and
+unzip it into KOReader's `plugins` directory. The zip contains the
+`karako.koplugin/` folder itself, so there is nothing to rearrange:
+
+```sh
+unzip karako.koplugin-v0.6.0.zip -d /mnt/onboard/.adds/koreader/plugins/
+```
+
+Or from a clone, if you would rather:
+
+```sh
+git clone https://github.com/davepwsmith/karako
+cp -r karako/karako.koplugin /mnt/onboard/.adds/koreader/plugins/
+```
+
+Either way the destination is KOReader's `plugins` directory:
 
 | Device | Destination |
 | --- | --- |
@@ -101,11 +117,6 @@ Copy the plugin folder into KOReader's `plugins` directory:
 | Flatpak | `~/.var/app/rocks.koreader.KOReader/config/koreader/plugins/karako.koplugin/` |
 | AppImage | `~/.config/koreader/plugins/karako.koplugin/` |
 | Desktop / emulator | `<koreader>/plugins/karako.koplugin/` |
-
-```sh
-git clone https://github.com/davepwsmith/karako
-cp -r karako/karako.koplugin /mnt/onboard/.adds/koreader/plugins/
-```
 
 Restart KOReader. The plugin appears under **Tools → More tools → KaraKo**
 (the hamburger menu in the file manager).
@@ -459,7 +470,21 @@ compose well, since its acquisition links carry the Karakeep bookmark ID
 ```sh
 make check  # syntax and accidental globals, every file
 make test   # the spec suite, any Lua 5.1
+make dist   # build the installable zip
 ```
+
+### Cutting a release
+
+The version lives in `karako.koplugin/_meta.lua` and nowhere else. Bump it,
+commit, then tag to match:
+
+```sh
+git tag v0.6.0 && git push origin v0.6.0
+```
+
+`.github/workflows/release.yml` runs the checks and the specs, refuses the tag if
+it disagrees with `_meta.lua`, builds `karako.koplugin-v0.6.0.zip` and attaches
+it to a GitHub release with generated notes.
 
 `articleutil.lua` has no KOReader dependencies and carries the bulk of the fiddly
 logic, so it is directly testable off-device. EPUB assembly needs the real
