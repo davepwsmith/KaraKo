@@ -424,6 +424,13 @@ mapped onto the four Karakeep supports; anything else becomes yellow.
   Kobo hardware than a plain text sync — turn off *Embed images* if you mind.
 - **Only `link` and `text` bookmarks sync.** Asset bookmarks (uploaded PDFs and
   images) are skipped; they are already in a readable format and do not need us.
+- **Images inlined in a saved page archive are embedded.** A precrawled archive
+  is a SingleFile capture, and SingleFile inlines every resource as a `data:`
+  URI rather than leaving it pointing at the network — that is the whole point
+  of the format. Those are decoded and written into the EPUB. An earlier version
+  discarded any source that was not `http(s)`, which stripped *every* picture
+  from an archive; if you sync with **Prefer the saved page archive** on and saw
+  no images, that was why.
 - **Lazy-loaded images are resolved.** Karakeep's extraction keeps a page's
   original markup, so articles from sites that lazy-load arrive with a
   placeholder in `src` and the real picture in `data-src`, `data-original`,

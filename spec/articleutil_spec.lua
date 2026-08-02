@@ -302,6 +302,60 @@ describe("utf16Length", function()
     end)
 end)
 
+describe("decodeBase64", function()
+    -- RFC 4648 test vectors: every padding case, which is where an off-by-one
+    -- in the tail handling would hide.
+    it("decodes each tail length", function()
+        assertEqual(ArticleUtil.decodeBase64("Zg=="), "f")
+        assertEqual(ArticleUtil.decodeBase64("Zm8="), "fo")
+        assertEqual(ArticleUtil.decodeBase64("Zm9v"), "foo")
+        assertEqual(ArticleUtil.decodeBase64("Zm9vYg=="), "foob")
+        assertEqual(ArticleUtil.decodeBase64("Zm9vYmE="), "fooba")
+        assertEqual(ArticleUtil.decodeBase64("Zm9vYmFy"), "foobar")
+    end)
+
+    it("survives binary bytes, including nulls", function()
+        -- "\0\1\255" round-tripped through base64.
+        assertEqual(ArticleUtil.decodeBase64("AAH/"), "\0\1\255")
+    end)
+
+    it("ignores whitespace, as wrapped base64 carries", function()
+        assertEqual(ArticleUtil.decodeBase64("Zm9v\nYmFy"), "foobar")
+        assertEqual(ArticleUtil.decodeBase64("Zm9v YmFy"), "foobar")
+    end)
+
+    it("accepts the URL-safe alphabet", function()
+        assertEqual(ArticleUtil.decodeBase64("-_8="), "\251\255")
+    end)
+
+    it("refuses what is not base64", function()
+        assertNil(ArticleUtil.decodeBase64("not valid!!"))
+        assertNil(ArticleUtil.decodeBase64("Z"))
+        assertNil(ArticleUtil.decodeBase64(""))
+        assertNil(ArticleUtil.decodeBase64(nil))
+    end)
+end)
+
+describe("decodeDataUri", function()
+    it("decodes a base64 image, which is how an archive carries one", function()
+        assertEqual(ArticleUtil.decodeDataUri("data:image/png;base64,Zm9vYmFy"), "foobar")
+    end)
+
+    it("decodes a percent-encoded payload", function()
+        assertEqual(ArticleUtil.decodeDataUri("data:image/svg+xml,%3Csvg%2F%3E"), "<svg/>")
+    end)
+
+    it("is case-insensitive about the scheme", function()
+        assertEqual(ArticleUtil.decodeDataUri("DATA:image/png;BASE64,Zm9v"), "foo")
+    end)
+
+    it("returns nil for anything that is not a data URI", function()
+        assertNil(ArticleUtil.decodeDataUri("https://e.com/a.png"))
+        assertNil(ArticleUtil.decodeDataUri("/relative.png"))
+        assertNil(ArticleUtil.decodeDataUri(nil))
+    end)
+end)
+
 describe("imageSourceFrom", function()
     it("prefers a lazy-loading attribute over a placeholder src", function()
         assertEqual(ArticleUtil.imageSourceFrom(
@@ -328,10 +382,22 @@ describe("imageSourceFrom", function()
             "https://e.com/a.jpg")
     end)
 
-    it("rejects a data: URI or an obvious placeholder", function()
-        assertNil(ArticleUtil.imageSourceFrom(' src="data:image/gif;base64,R0lG"'))
+    it("rejects an obviously named placeholder", function()
         assertNil(ArticleUtil.imageSourceFrom(' src="https://e.com/placeholder.png"'))
         assertNil(ArticleUtil.imageSourceFrom(' src="https://e.com/blank.gif"'))
+    end)
+
+    -- In a saved page archive the data: URI *is* the picture, so it is passed
+    -- along; collectImages() tells a real image from a spacer by size.
+    it("passes a data: URI through rather than rejecting it", function()
+        assertEqual(ArticleUtil.imageSourceFrom(' src="data:image/gif;base64,R0lG"'),
+            "data:image/gif;base64,R0lG")
+    end)
+
+    it("still prefers a lazy attribute over an inlined placeholder", function()
+        assertEqual(ArticleUtil.imageSourceFrom(
+            ' src="data:image/gif;base64,R0lG" data-src="https://e.com/real.jpg"'),
+            "https://e.com/real.jpg")
     end)
 
     it("decodes entities in the URL", function()
@@ -392,6 +458,34 @@ describe("collectImages", function()
         assertEqual(#images, 1)
         local count = select(2, out:gsub('src="images/img1%.png"', ""))
         assertEqual(count, 2)
+    end)
+
+    -- A precrawled archive is a SingleFile capture, which inlines every image
+    -- as a data: URI. Discarding those stripped every picture from an archive.
+    it("embeds an inlined image from a saved page archive", function()
+        local payload = string.rep("A", 4000) -- decodes to ~3 KB, well over the floor
+        local html = '<p>a</p><img src="data:image/png;base64,' .. payload .. '">'
+        local out, images = ArticleUtil.collectImages(html)
+        assertEqual(#images, 1)
+        assertTrue(images[1].data, "expected the decoded bytes to travel with it")
+        assertNil(images[1].src, "an inlined image has nothing to fetch")
+        assertMatch(out, '<img src="images/img1')
+    end)
+
+    it("treats a tiny inlined image as a placeholder", function()
+        -- A 1x1 spacer GIF: present as markup, worthless as a picture.
+        local html = '<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">'
+        local out, images = ArticleUtil.collectImages(html)
+        assertEqual(#images, 0)
+        assertNoMatch(out, "<img")
+    end)
+
+    it("embeds a repeated inlined image once", function()
+        local payload = string.rep("A", 4000)
+        local one = '<img src="data:image/png;base64,' .. payload .. '">'
+        local out, images = ArticleUtil.collectImages(one .. one)
+        assertEqual(#images, 1)
+        assertEqual(select(2, out:gsub("<img", "")), 2)
     end)
 
     it("picks up lazy-loaded images", function()
