@@ -1,0 +1,50 @@
+# Builds the installable plugin zip and attaches it to a GitHub release.
+#
+# Triggered by pushing a version tag:
+#
+#     git tag v0.6.0 && git push origin v0.6.0
+#
+# The tag has to agree with the version in karako.koplugin/_meta.lua -- that is
+# what the plugin logs at startup to identify itself, so a release whose tag and
+# log line disagree would defeat the one reliable way to spot a stale install.
+# check-version fails the build rather than shipping that.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # lua5.1 ships luac5.1 in the same package. The plugin targets the Lua 5.1
+      # dialect because that is what LuaJIT, and therefore KOReader, implements.
+      - name: Install Lua 5.1
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lua5.1
+
+      - name: Tag must match _meta.lua
+        run: make check-version TAG=${{ github.ref_name }}
+
+      # `dist` depends on check and test, so a release cannot be cut from a tree
+      # that does not pass them.
+      - name: Build the plugin zip
+        run: make dist
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            karako.koplugin-*.zip \
+            --title "${{ github.ref_name }}" \
+            --generate-notes

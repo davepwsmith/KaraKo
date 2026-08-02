@@ -1,0 +1,10 @@
+# KOReader sidecar directories, in case anyone points a download folder here
+*.sdr/
+
+# Editor and OS noise
+*~
+.DS_Store
+
+# Release artefacts
+build/
+karako.koplugin-v*.zip
