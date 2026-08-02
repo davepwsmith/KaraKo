@@ -402,15 +402,6 @@ Editing the file later does nothing by itself -- choose "Reload it now" to pull 
                 callback = function(touchmenu_instance) self:setDownloadDirectory(touchmenu_instance) end,
             },
             {
-                text = _("Tidy up old file names"),
-                help_text = _([[
-Articles used to be named "[kk-id_…] Title", which hid the title behind the ID in the file browser. New downloads are named "Title [kk-id_…]" instead.
-
-This renames the ones already on the device. Reading progress and highlights follow the file.]]),
-                keep_menu_open = true,
-                callback = function() self:renameLegacyArticles() end,
-            },
-            {
                 text = _("Embed images"),
                 checked_func = function() return self.download_images end,
                 callback = function() self.download_images = not self.download_images end,
@@ -852,64 +843,64 @@ end
 
 --- Rename articles still carrying the leading "[kk-id_…] " marker.
 --
--- Both forms read back the same, so this is cosmetic and entirely optional --
--- nothing breaks if it is never run. It follows what FileManager does for a
--- rename, so that the sidecar (reading position, highlights), the history entry
--- and any collection membership travel with the file rather than being
--- stranded on a name that no longer exists.
-function KaraKo:renameLegacyArticles()
-    if not self.directory or lfs.attributes(self.directory, "mode") ~= "directory" then
-        UIManager:show(InfoMessage:new{ text = _("Set the download folder first.") })
-        return
+-- Runs as part of a sync rather than from a menu: it is migration bookkeeping,
+-- not a setting, and there is nothing to decide about it. No "already done"
+-- flag either -- the test is a string comparison against a map the caller has
+-- in hand, so re-checking costs nothing and stays right if old files reappear
+-- from a backup or a second device.
+--
+-- Both name forms read back the same, so this is cosmetic and skipping it
+-- breaks nothing. It follows what FileManager does for a rename, so that the
+-- sidecar (reading position, highlights), the history entry and any collection
+-- membership travel with the file rather than being stranded on a name that no
+-- longer exists.
+--
+-- @tparam table local_articles Map of ID to path, updated in place.
+-- @treturn number Articles renamed.
+function KaraKo:renameLegacyArticles(local_articles)
+    local legacy = {}
+    for id, path in pairs(local_articles) do
+        if ArticleUtil.hasLegacyName(path) then legacy[id] = path end
     end
+    if next(legacy) == nil then return 0 end
 
     local ReadCollection = require("readcollection")
     local ReadHistory = require("readhistory")
 
-    local renamed, skipped = 0, 0
+    local renamed = 0
 
-    for id, path in pairs(self:getLocalArticles()) do
-        if ArticleUtil.hasLegacyName(path) then
-            local dir = path:match("^(.*)/[^/]+$") or self.directory
-            local name = path:match("([^/]+)$")
-            local ext = name:match("(%.[%a%d]+)$") or ".epub"
+    for id, path in pairs(legacy) do
+        local dir = path:match("^(.*)/[^/]+$") or self.directory
+        local name = path:match("([^/]+)$")
+        local ext = name:match("(%.[%a%d]+)$") or ".epub"
 
-            -- Recover the title from between the old marker and the extension,
-            -- rather than refetching it: the bookmark may well be archived by
-            -- now, and the name on disk is what the reader already knows it by.
-            local title = name:match("^%[kk%-id_.-%]%s*(.*)" .. ext:gsub("%W", "%%%0") .. "$")
+        -- Recover the title from between the old marker and the extension,
+        -- rather than refetching it: the bookmark may well be archived by now,
+        -- and the name on disk is what the reader already knows it by.
+        local title = name:match("^%[kk%-id_.-%]%s*(.*)" .. ext:gsub("%W", "%%%0") .. "$")
 
-            local target = ffiUtil.joinPath(dir, ArticleUtil.buildFilename(id, title, ext))
+        local target = ffiUtil.joinPath(dir, ArticleUtil.buildFilename(id, title, ext))
 
-            if target == path or lfs.attributes(target, "mode") then
-                skipped = skipped + 1
-            elseif os.rename(path, target) then
-                DocSettings.updateLocation(path, target)
-                ReadHistory:updateItem(path, target)
-                ReadCollection:updateItem(path, target)
-                renamed = renamed + 1
-            else
-                logger.warn("KaraKo: could not rename", path, "to", target)
-                skipped = skipped + 1
-            end
+        -- Leave anything ambiguous exactly as it is. A rename that does not
+        -- happen costs nothing: the old name still resolves to the same ID.
+        if target == path or lfs.attributes(target, "mode") then
+            logger.dbg("KaraKo: not renaming", path, "- target exists")
+        elseif os.rename(path, target) then
+            DocSettings.updateLocation(path, target)
+            ReadHistory:updateItem(path, target)
+            ReadCollection:updateItem(path, target)
+            local_articles[id] = target
+            renamed = renamed + 1
+        else
+            logger.warn("KaraKo: could not rename", path, "to", target)
         end
     end
 
-    local message
-    if renamed == 0 and skipped == 0 then
-        message = _("Nothing to rename — all file names are already up to date.")
-    else
-        message = T(_("Renamed %1 article(s)."), renamed)
-        if skipped > 0 then
-            message = message .. "\n" .. T(_("%1 left alone."), skipped)
-        end
+    if renamed > 0 then
+        logger.info("KaraKo: renamed", renamed, "article(s) to put the title first")
     end
 
-    UIManager:show(InfoMessage:new{ text = message })
-
-    if renamed > 0 and FileManager.instance then
-        FileManager.instance:onRefresh()
-    end
+    return renamed
 end
 
 --- Decide whether a local article counts as done with.
@@ -1024,6 +1015,11 @@ function KaraKo:synchronize(quiet)
     end
 
     local local_articles = self:getLocalArticles()
+
+    -- Before anything reads or writes these paths: bring names written by
+    -- earlier versions up to date, so the rest of the sync works on the paths
+    -- that will still exist afterwards.
+    self:renameLegacyArticles(local_articles)
 
     -- Upload first: an article archived now drops out of the list we are about
     -- to fetch, so we never re-download something we have just finished.

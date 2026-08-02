@@ -281,10 +281,10 @@ truncates the end of a long name, pushed the title out of sight entirely. It als
 made the folder sort by ID rather than alphabetically.
 
 Both forms are read back the same way, so upgrading orphans nothing and
-re-downloads nothing — articles already on the device simply keep their old
-names. **KaraKo → Tidy up old file names** renames them if you want them
-consistent; reading progress, highlights and collection membership follow the
-file.
+re-downloads nothing. Articles already on the device are renamed to match on the
+next sync — reading progress, highlights and collection membership follow the
+file. There is nothing to turn on and nothing to run; once the folder is
+consistent the check costs nothing and never fires again.
 
 Renaming an article yourself is fine, as long as the `[kk-id_…]` marker survives
 somewhere in the name. Remove it and KaraKo stops recognising the file: it will
