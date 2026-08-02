@@ -30,8 +30,12 @@ same problem for a different read-it-later service.
 ## Requirements
 
 - A Karakeep server, and an API key from **Settings → API Keys**.
-- KOReader installed on the device. Any KOReader version with `ffi/archiver` and
-  `cre.getBalancedHTML` will do — that is anything from 2021 onwards.
+- KOReader installed on the device. Downloading needs `ffi/archiver` and
+  `cre.getBalancedHTML`, which is anything from 2021 onwards.
+- **Sending highlights back needs KOReader 2024.04 or newer**, which is where
+  highlights and bookmarks were merged into the single `annotations` sidecar
+  table this reads. On an older build everything else works and highlight
+  syncing simply finds nothing; the log says so once per article.
 
 ## API key scopes
 
@@ -189,7 +193,7 @@ quickest way to catch a stale install — the line numbers in a stack trace will
 not tell you:
 
 ```
-INFO  KaraKo: version 0.5.0, main.lua modified 2026-07-29 12:25:28, loaded from …/plugins/karako.koplugin
+INFO  KaraKo: version 0.6.0, main.lua modified 2026-08-02 09:14:03, loaded from …/plugins/karako.koplugin
 ```
 
 If that timestamp is older than your last `cp`, KOReader is running the previous
@@ -342,6 +346,12 @@ So the plugin matches on text:
 - Highlights already in Karakeep with the same text are skipped, so repeated
   syncs do not pile up duplicates.
 
+Offsets are counted in UTF-16 code units, because that is how a JavaScript
+string is indexed and Karakeep is a JavaScript application. Counting bytes
+instead — which is what Lua does by default — puts every highlight in an article
+progressively out of place as soon as it contains anything outside ASCII, and a
+single curly quote or em-dash is enough.
+
 Your note and the chapter title travel with the highlight. Highlight colours are
 mapped onto the four Karakeep supports; anything else becomes yellow.
 
@@ -358,6 +368,11 @@ mapped onto the four Karakeep supports; anything else becomes yellow.
   are detected from their magic bytes rather than the URL's extension, and any
   image that fails to download has its `<img>` removed so you never see a broken
   image box.
+- **Image embedding is bounded**, at 2 MB for any one image and 8 MB across an
+  article, on top of the *Embed images* count limit. Every image is held in
+  memory until the EPUB is written, and a Kobo has little to spare; an article
+  pointing at print-resolution photographs would otherwise take all of it.
+  Anything over the limit is dropped with its `<img>`, and the log names it.
 - **Local deletion is conservative.** Articles are only removed when the sync saw
   your whole library uninterrupted — never after a capped or cancelled run — and
   never if you have opened them. An article archived on another device is tidied
@@ -385,7 +400,7 @@ compose well, since its acquisition links carry the Karakeep bookmark ID
 
 ```sh
 make check  # syntax and accidental globals, every file
-make test   # 100 specs, any Lua 5.1
+make test   # the spec suite, any Lua 5.1
 ```
 
 `articleutil.lua` has no KOReader dependencies and carries the bulk of the fiddly

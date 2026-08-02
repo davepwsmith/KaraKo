@@ -251,6 +251,51 @@ function ArticleUtil.normaliseWhitespace(s)
     return s
 end
 
+--- Count the UTF-16 code units a UTF-8 string occupies.
+--
+-- Karakeep is a JavaScript application, so the offsets its highlights API takes
+-- index a JavaScript string: UTF-16 code units, not bytes. A single "é" is two
+-- bytes but one code unit, an emoji four bytes but two, so byte offsets drift
+-- as soon as an article contains anything outside ASCII -- which is to say
+-- almost always, since a curly quote or an em-dash is enough.
+--
+-- @tparam string s
+-- @treturn number
+function ArticleUtil.utf16Length(s)
+    if type(s) ~= "string" then return 0 end
+
+    local units, i, len = 0, 1, #s
+
+    while i <= len do
+        local b = s:byte(i)
+        if b < 0x80 then
+            units, i = units + 1, i + 1
+        elseif b < 0xC0 then
+            -- A stray continuation byte: not valid UTF-8. Counting it as one
+            -- keeps the result monotonic rather than silently losing ground.
+            units, i = units + 1, i + 1
+        elseif b < 0xE0 then
+            units, i = units + 1, i + 2
+        elseif b < 0xF0 then
+            units, i = units + 1, i + 3
+        else
+            units, i = units + 2, i + 4 -- above the BMP: a surrogate pair
+        end
+    end
+
+    return units
+end
+
+--- Move an index forward to the start of a UTF-8 character.
+local function alignToCharStart(s, i)
+    while i <= #s do
+        local b = s:byte(i)
+        if b < 0x80 or b >= 0xC0 then break end -- not a continuation byte
+        i = i + 1
+    end
+    return i
+end
+
 --- Locate a highlighted passage within an article's plain text.
 --
 -- KOReader records highlights as crengine XPointers, which mean nothing to
@@ -261,7 +306,8 @@ end
 --
 -- @tparam string text Article plain text, as returned by htmlToText().
 -- @tparam string needle The highlighted passage.
--- @treturn number|nil Zero-based start offset, in bytes.
+-- @treturn number|nil Zero-based start offset, in UTF-16 code units -- what
+--   Karakeep indexes by. See utf16Length().
 -- @treturn number|nil End offset, exclusive.
 function ArticleUtil.findTextOffsets(text, needle)
     if type(text) ~= "string" or type(needle) ~= "string" then return nil end
@@ -269,23 +315,34 @@ function ArticleUtil.findTextOffsets(text, needle)
     needle = ArticleUtil.normaliseWhitespace(needle)
     if needle == "" then return nil end
 
-    local start_pos = text:find(needle, 1, true)
+    local match_pos, match_len
 
-    if not start_pos then
+    local start_pos = text:find(needle, 1, true)
+    if start_pos then
+        match_pos, match_len = start_pos, #needle
+    elseif #needle > 40 then
         -- KOReader may have captured a partial word at either end, or the
         -- crawler and the renderer may disagree about punctuation. Retry on a
-        -- distinctive middle slice before giving up.
-        if #needle > 40 then
-            local probe = needle:sub(11, #needle - 10)
+        -- distinctive middle slice before giving up. The slice is snapped to
+        -- character boundaries: cutting mid-sequence would still match
+        -- byte-wise, but the offsets it produced would point into the middle
+        -- of a character.
+        local from = alignToCharStart(needle, 11)
+        local probe = ArticleUtil.trimPartialUtf8(needle:sub(from, #needle - 10))
+        if probe ~= "" then
             local probe_pos = text:find(probe, 1, true)
             if probe_pos then
-                return probe_pos - 1, probe_pos - 1 + #probe
+                match_pos, match_len = probe_pos, #probe
             end
         end
-        return nil
     end
 
-    return start_pos - 1, start_pos - 1 + #needle
+    if not match_pos then return nil end
+
+    local start_offset = ArticleUtil.utf16Length(text:sub(1, match_pos - 1))
+    local length = ArticleUtil.utf16Length(text:sub(match_pos, match_pos + match_len - 1))
+
+    return start_offset, start_offset + length
 end
 
 --- Rewrite <img> sources to local EPUB paths, collecting what needs downloading.
@@ -535,8 +592,14 @@ function ArticleUtil.urlEncode(s)
     end))
 end
 
---- Build a query string from a table, skipping nil values.
--- Keys are sorted so the output is stable and testable.
+--- Build a query string from a table, skipping anything that is not a scalar.
+--
+-- Keys are sorted so the output is stable and testable. Only strings, numbers
+-- and booleans can be encoded; anything else is dropped rather than run through
+-- tostring(), which would put a literal "table: 0x55f3…" on the wire and fail in
+-- a thoroughly baffling way. Callers that care -- pagination, in particular --
+-- must notice the value went missing; see KaraKo:fetchBookmarks().
+--
 -- @tparam table params
 -- @treturn string Empty string, or "?a=1&b=2".
 function ArticleUtil.buildQuery(params)
@@ -544,7 +607,10 @@ function ArticleUtil.buildQuery(params)
 
     local keys = {}
     for key, value in pairs(params) do
-        if value ~= nil then table.insert(keys, key) end
+        local kind = type(value)
+        if kind == "string" or kind == "number" or kind == "boolean" then
+            table.insert(keys, key)
+        end
     end
     table.sort(keys)
 

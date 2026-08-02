@@ -21,7 +21,6 @@ package.preload["socketutil"] = function()
     return { set_timeout = function() end, reset_timeout = function() end }
 end
 package.preload["socket.http"] = function() return { request = function() end } end
-package.preload["ltn12"] = function() return { sink = { table = function() end } } end
 
 local EpubBuilder = require("epubbuilder")
 

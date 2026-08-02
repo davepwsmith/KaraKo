@@ -33,6 +33,28 @@ td, th { border: 1px solid #999; padding: 0.2em 0.4em; }
 .kk-note { font-size: 0.9em; font-style: italic; margin: 0 0 1em 0; }
 ]]
 
+-- Ceilings on image fetching. Every image body is held in memory until the zip
+-- is written, so these bound the peak: a Kobo has little RAM to spare, and an
+-- article pointing at a handful of print-resolution photographs would otherwise
+-- take the whole of it. `max_images` caps how many, these cap how large.
+local MAX_IMAGE_BYTES = 2 * 1024 * 1024
+local MAX_IMAGE_TOTAL_BYTES = 8 * 1024 * 1024
+
+--- An ltn12 sink that collects into `t` and gives up past `max_bytes`.
+--
+-- Checked as the bytes arrive rather than against Content-Length, which is
+-- absent on a chunked response and lies on plenty of others.
+local function cappedSink(t, max_bytes)
+    local received = 0
+    return function(chunk)
+        if chunk == nil then return 1 end -- end of stream
+        received = received + #chunk
+        if received > max_bytes then return nil, "too_large" end
+        table.insert(t, chunk)
+        return 1
+    end
+end
+
 -- Fetch a remote image. Kept separate from the Karakeep client because these
 -- are third-party URLs that must not carry the API token.
 --
@@ -41,11 +63,13 @@ td, th { border: 1px solid #999; padding: 0.2em 0.4em; }
 -- SDL and needs a display. Requiring it lazily keeps this module loadable for
 -- EPUB assembly alone, which is what makes it testable outside a running
 -- KOReader (see TESTING.md).
-local function fetchUrl(url, block_timeout, total_timeout)
+--
+-- @treturn string|nil Image bytes.
+-- @treturn string|nil Why not, for the log.
+local function fetchUrl(url, max_bytes, block_timeout, total_timeout)
     local socket = require("socket")
     local socketutil = require("socketutil")
     local http = require("socket.http")
-    local ltn12 = require("ltn12")
 
     local sink = {}
     socketutil:set_timeout(block_timeout or 10, total_timeout or 30)
@@ -53,14 +77,19 @@ local function fetchUrl(url, block_timeout, total_timeout)
     local code, resp_headers = socket.skip(1, http.request{
         url = url,
         method = "GET",
-        sink = ltn12.sink.table(sink),
+        sink = cappedSink(sink, max_bytes or MAX_IMAGE_BYTES),
         headers = { ["User-Agent"] = "KOReader Karakeep plugin" },
     })
 
     socketutil:reset_timeout()
 
-    if resp_headers == nil or code ~= 200 then
-        return nil
+    -- A sink that gave up makes http.request return nil plus a message, so
+    -- socket.skip leaves that message in `code` and nothing in `resp_headers`.
+    if resp_headers == nil then
+        return nil, tostring(code)
+    end
+    if code ~= 200 then
+        return nil, "HTTP " .. tostring(code)
     end
 
     return table.concat(sink)
@@ -254,12 +283,15 @@ end
 -- @tparam table bookmark Karakeep bookmark, with content included.
 -- @tparam string filepath Destination path.
 -- @tparam table opts
---   body_html      article HTML (defaults to bookmark.content.htmlContent)
---   include_images download and embed images
---   max_images     cap on embedded images
---   progress       optional function(message) for UI feedback
+--   body_html              article HTML (defaults to bookmark.content.htmlContent)
+--   include_images         download and embed images
+--   max_images             cap on how many images are embedded
+--   max_image_bytes_total  cap on their combined size, in bytes
+--   progress               optional function(message) for UI feedback; return
+--                          false from it to abandon the build
 -- @treturn bool ok
--- @treturn string|nil Error description when ok is false.
+-- @treturn string|nil Error description when ok is false. "cancelled" means the
+--   progress callback asked to stop, not that anything went wrong.
 function EpubBuilder.build(bookmark, filepath, opts)
     opts = opts or {}
 
@@ -282,23 +314,39 @@ function EpubBuilder.build(bookmark, filepath, opts)
 
     -- Fetch images before opening the archive: an entry can only be written
     -- once, so we must know which images survive before we emit the XHTML that
-    -- references them. Bytes are held one at a time and spilled to disk.
+    -- references them. Every body stays in memory until the zip is written,
+    -- which is what `budget` bounds.
     local images, image_data = {}, {}
+    local budget = opts.max_image_bytes_total or MAX_IMAGE_TOTAL_BYTES
+
     for index, candidate in ipairs(candidates) do
         if opts.progress then
-            opts.progress(string.format("Fetching image %d of %d…", index, #candidates))
+            -- A false here is the reader cancelling the sync. Anything else,
+            -- including the nil a progress function that returns nothing gives
+            -- us, means carry on.
+            local go_on = opts.progress(string.format("Fetching image %d of %d…", index, #candidates))
+            if go_on == false then return false, "cancelled" end
         end
 
-        local data = fetchUrl(candidate.src, opts.image_block_timeout, opts.image_total_timeout)
+        local data, why
+        if budget <= 0 then
+            why = "image budget for this article is spent"
+        else
+            data, why = fetchUrl(candidate.src, math.min(budget, MAX_IMAGE_BYTES),
+                opts.image_block_timeout, opts.image_total_timeout)
+        end
+
         -- Trust the magic bytes, not the URL: extensions are frequently a lie,
         -- and crengine will not render an image whose type is misdeclared.
         local media_type = data and ArticleUtil.sniffImageType(data)
 
         if data and media_type and media_type ~= "image/webp" then
+            budget = budget - #data
             table.insert(images, { path = candidate.path, media_type = media_type })
             image_data[candidate.path] = data
         else
-            logger.dbg("KaraKo: dropping image", candidate.src, media_type or "unfetchable")
+            logger.dbg("KaraKo: dropping image", candidate.src,
+                media_type or why or "unfetchable")
         end
     end
 
@@ -346,6 +394,7 @@ function EpubBuilder.build(bookmark, filepath, opts)
     xhtml = [[<?xml version="1.0" encoding="UTF-8"?>]] .. "\n" .. xhtml
 
     local Archiver = require("ffi/archiver")
+    local lfs = require("libs/libkoreader-lfs")
     local writer = Archiver.Writer:new{}
     local tmp_path = filepath .. ".tmp"
 
@@ -354,34 +403,59 @@ function EpubBuilder.build(bookmark, filepath, opts)
     end
 
     local mtime = os.time()
+    local write_failed
+
+    -- Only an explicit `false` counts as a failure: ffi/archiver's Writer has
+    -- long returned a boolean here, but treating a nil as failure too would
+    -- break every build on any version that returns nothing.
+    local function addEntry(name, data)
+        if writer:addFileFromMemory(name, data, mtime) == false then
+            write_failed = write_failed or name
+        end
+    end
 
     -- "mimetype" must be first and stored uncompressed.
     writer:setZipCompression("store")
-    writer:addFileFromMemory("mimetype", "application/epub+zip", mtime)
+    addEntry("mimetype", "application/epub+zip")
     writer:setZipCompression("deflate")
 
-    writer:addFileFromMemory("META-INF/container.xml", table.concat({
+    addEntry("META-INF/container.xml", table.concat({
         [[<?xml version="1.0" encoding="UTF-8"?>]],
         [[<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">]],
         [[<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>]],
         [[</container>]],
-    }, "\n"), mtime)
+    }, "\n"))
 
-    writer:addFileFromMemory("OEBPS/stylesheet.css", CSS, mtime)
-    writer:addFileFromMemory("OEBPS/content.xhtml", xhtml, mtime)
-    writer:addFileFromMemory("OEBPS/content.opf", opf(bookmark, title, images), mtime)
-    writer:addFileFromMemory("OEBPS/toc.ncx", ncx(bookmark, title), mtime)
+    addEntry("OEBPS/stylesheet.css", CSS)
+    addEntry("OEBPS/content.xhtml", xhtml)
+    addEntry("OEBPS/content.opf", opf(bookmark, title, images))
+    addEntry("OEBPS/toc.ncx", ncx(bookmark, title))
 
     -- Already-compressed formats gain nothing from deflate, and the Kobo's CPU
     -- is slow enough that it is worth skipping.
     writer:setZipCompression("store")
     for _, image in ipairs(images) do
-        writer:addFileFromMemory("OEBPS/" .. image.path, image_data[image.path], mtime)
+        addEntry("OEBPS/" .. image.path, image_data[image.path])
         image_data[image.path] = nil -- release as we go
     end
 
     writer:close()
     collectgarbage()
+
+    if write_failed then
+        os.remove(tmp_path)
+        return false, "could not write " .. write_failed
+    end
+
+    -- Last line of defence against a half-written archive. A disk that fills up
+    -- part way through can leave something that still opens as a zip with most
+    -- of its entries missing, and the reader would only find out on opening the
+    -- article. The smallest EPUB this builds is comfortably over a kilobyte.
+    local written = lfs.attributes(tmp_path, "size") or 0
+    if written < 256 then
+        os.remove(tmp_path)
+        return false, string.format("archive is only %d bytes", written)
+    end
 
     os.remove(filepath)
     local renamed, rename_err = os.rename(tmp_path, filepath)

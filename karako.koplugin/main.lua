@@ -98,11 +98,14 @@ function KaraKo:_onNetworkConnected()
         return
     end
 
+    -- Recorded now rather than inside the callback: two connection events
+    -- arriving within the settling delay would otherwise both get past the
+    -- check above and both schedule a sync.
+    self.last_auto_sync = now
+    self.settings:saveSetting("last_auto_sync", now)
+
     -- Let the connection settle before using it.
     UIManager:scheduleIn(2, function()
-        self.last_auto_sync = os.time()
-        self.settings:saveSetting("last_auto_sync", self.last_auto_sync)
-
         if self.ui and self.ui.document then
             -- Mid-read. Push read status and highlights only: that is the half
             -- which goes stale on the server, and it needs no progress UI, so
@@ -796,13 +799,22 @@ end
 -- Local article bookkeeping
 --------------------------------------------------------------------------------
 
+-- Articles are only ever written to the top of the download folder, so the
+-- recursion is purely for people who filed them into subfolders by hand. A
+-- download folder pointed at something like /mnt/onboard would otherwise walk
+-- an entire library on every sync, and a symlinked directory loop would not
+-- terminate at all.
+local MAX_SCAN_DEPTH = 6
+
 --- Map bookmark ID to local path for every downloaded article.
 -- @tparam[opt] string dir
 -- @tparam[opt] table map
+-- @tparam[opt=0] number depth
 -- @treturn table
-function KaraKo:getLocalArticles(dir, map)
+function KaraKo:getLocalArticles(dir, map, depth)
     dir = dir or self.directory
     map = map or {}
+    depth = depth or 0
 
     if not dir or lfs.attributes(dir, "mode") ~= "directory" then
         return map
@@ -817,7 +829,11 @@ function KaraKo:getLocalArticles(dir, map)
                 local id = ArticleUtil.getBookmarkId(entry)
                 if id then map[id] = entry_path end
             elseif mode == "directory" and not entry:match("%.sdr$") then
-                self:getLocalArticles(entry_path, map)
+                if depth < MAX_SCAN_DEPTH then
+                    self:getLocalArticles(entry_path, map, depth + 1)
+                else
+                    logger.dbg("KaraKo: not descending past depth", MAX_SCAN_DEPTH, "at", entry_path)
+                end
             end
         end
     end
@@ -827,13 +843,14 @@ end
 
 --- Decide whether a local article counts as done with.
 -- @tparam string path
+-- @tparam[opt] table doc_settings An already-open sidecar, to save reopening it.
 -- @treturn bool
-function KaraKo:isFinished(path)
-    if not DocSettings:hasSidecarFile(path) then
+function KaraKo:isFinished(path, doc_settings)
+    if not doc_settings and not DocSettings:hasSidecarFile(path) then
         return false -- never opened
     end
 
-    local doc_settings = DocSettings:open(path)
+    doc_settings = doc_settings or DocSettings:open(path)
     local summary = doc_settings:readSetting("summary")
     local status = summary and summary.status
 
@@ -990,6 +1007,11 @@ function KaraKo:synchronize(quiet)
             local built, reason = self:downloadArticle(api, bookmark)
             if built then
                 downloaded = downloaded + 1
+            elseif reason == "cancelled" then
+                -- Cancelled from the progress dialog while images were being
+                -- fetched, rather than anything going wrong.
+                cancelled = true
+                break
             else
                 failed = failed + 1
                 first_failure = first_failure or reason
@@ -1044,6 +1066,10 @@ function KaraKo:synchronize(quiet)
     end
 end
 
+-- The per-sync cap tops out at 200 and a page holds up to 100, so a healthy
+-- server never needs more than a handful of pages.
+local MAX_BOOKMARK_PAGES = 10
+
 --- Fetch bookmarks for the configured scope, following pagination.
 -- @treturn table|nil Array of bookmarks.
 -- @treturn string|nil Error code.
@@ -1052,8 +1078,11 @@ end
 function KaraKo:fetchBookmarks(api)
     local bookmarks = {}
     local cursor = nil
+    local pages = 0
 
     repeat
+        pages = pages + 1
+
         local ok, result = api:getBookmarkPage{
             scope = self.sync_scope,
             scope_id = self.scope_id,
@@ -1077,6 +1106,21 @@ function KaraKo:fetchBookmarks(api)
         end
 
         cursor = result.nextCursor
+
+        -- Only a string can go into a query; buildQuery() drops anything else,
+        -- and we would then re-request the first page for ever.
+        if cursor ~= nil and type(cursor) ~= "string" then
+            logger.warn("KaraKo: ignoring a nextCursor of type", type(cursor))
+            cursor = nil
+        end
+
+        -- Belt and braces against a server that keeps handing back the same
+        -- cursor. Reporting the scope as incomplete is what stops the caller
+        -- deleting local files on the strength of a partial answer.
+        if cursor and pages >= MAX_BOOKMARK_PAGES then
+            logger.warn("KaraKo: stopping after", pages, "pages with a cursor still set")
+            return bookmarks, nil, false
+        end
     until not cursor
 
     return bookmarks, nil, true
@@ -1191,13 +1235,18 @@ function KaraKo:downloadArticle(api, bookmark)
         body_html = body_html,
         include_images = self.download_images,
         max_images = self.max_images,
+        -- Returned, not discarded: Trapper:info() answers false when the reader
+        -- taps to cancel, which abandons the build rather than making them wait
+        -- out every image first.
         progress = function(message)
-            Trapper:info(message, true, true)
+            return Trapper:info(message, true, true)
         end,
     })
 
     if not ok then
-        logger.err("KaraKo: could not build EPUB for", bookmark.id, "at", filepath, "-", tostring(err))
+        if err ~= "cancelled" then
+            logger.err("KaraKo: could not build EPUB for", bookmark.id, "at", filepath, "-", tostring(err))
+        end
         return false, tostring(err)
     end
 
@@ -1235,12 +1284,15 @@ function KaraKo:uploadStatuses(local_articles, quiet)
         examined = examined + 1
         Trapper:info(T(_("Sending read status and highlights (%1 of %2)…"), examined, total), true, true)
 
-        local finished = self:isFinished(path)
+        -- One sidecar read serves both the finished check and the highlights;
+        -- an article with no sidecar has never been opened, so neither applies.
+        local doc_settings = DocSettings:hasSidecarFile(path) and DocSettings:open(path) or nil
+        local finished = doc_settings ~= nil and self:isFinished(path, doc_settings)
 
         -- Highlights are pushed for anything that has been opened, not just
         -- finished articles, so notes are not lost if you never mark it read.
-        if self.sync_highlights and DocSettings:hasSidecarFile(path) then
-            local created, unresolved = Highlights.push(api, id, path)
+        if self.sync_highlights and doc_settings then
+            local created, unresolved = Highlights.push(api, id, path, doc_settings)
             highlights_sent = highlights_sent + created
             unresolved_total = unresolved_total + unresolved
         end
@@ -1299,13 +1351,13 @@ end
 function KaraKo:processRemoteDeletes(local_articles, remote_ids)
     local count = 0
     for id, path in pairs(local_articles) do
-        if not remote_ids[id] and not self:isFinished(path) then
-            -- Untouched locally and gone remotely: archived or deleted in
-            -- Karakeep from another device.
-            if not DocSettings:hasSidecarFile(path) then
-                self:deleteLocalArticle(path)
-                count = count + 1
-            end
+        -- Untouched locally and gone remotely: archived or deleted in Karakeep
+        -- from another device. The sidecar test is the whole condition -- an
+        -- article that has one has been opened, and is never deleted from under
+        -- the reader whatever its read status says.
+        if not remote_ids[id] and not DocSettings:hasSidecarFile(path) then
+            self:deleteLocalArticle(path)
+            count = count + 1
         end
     end
     return count

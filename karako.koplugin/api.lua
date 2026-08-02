@@ -22,7 +22,9 @@ local KarakeepApi = {}
 KarakeepApi.__index = KarakeepApi
 
 -- Karakeep's own docs describe a 429 with a retry hint; a couple of quick
--- retries keeps a large first sync from falling over.
+-- retries keeps a large first sync from falling over. The hint is honoured when
+-- the server sends one -- see retryAfterSeconds() -- and 2^attempt is the
+-- fallback.
 local MAX_RETRIES = 2
 
 --- Create a client.
@@ -57,6 +59,9 @@ end
 -- @treturn bool ok
 -- @treturn table|string Decoded JSON, the filepath, or an error code.
 -- @treturn number|nil HTTP status when the request completed but failed.
+--
+-- Retries are attempted for the failures where repeating the request can
+-- plausibly help *and* is safe to do; see the comment in the loop below.
 function KarakeepApi:call(method, path, opts)
     opts = opts or {}
 
@@ -67,22 +72,45 @@ function KarakeepApi:call(method, path, opts)
     local url = self.server_url .. "/api/v1" .. path .. ArticleUtil.buildQuery(opts.query)
     local body_json = opts.body and JSON.encode(opts.body) or nil
 
-    local ok, result, code
+    local ok, result, code, retry_after
     for attempt = 0, MAX_RETRIES do
-        ok, result, code = self:_request(method, url, body_json, opts.filepath, opts.quiet)
+        ok, result, code, retry_after =
+            self:_request(method, url, body_json, opts.filepath, opts.quiet)
 
-        -- Retry only where retrying can plausibly help.
-        local retriable = (code == 429 or (code and code >= 500))
-            or result == "network_error"
+        -- A 429 is refused before the server acts on it, so repeating it is
+        -- safe whatever the method. A 5xx or a dropped connection is not: the
+        -- request may well have been processed and only the answer lost, and
+        -- Karakeep has no idempotency key, so repeating POST /highlights would
+        -- quietly create a second copy of the highlight. Those are retried for
+        -- reads only.
+        local safe_to_repeat = method == "GET" or method == "HEAD"
+        local retriable = code == 429
+            or (safe_to_repeat and (result == "network_error" or (code and code >= 500)))
+
         if ok or not retriable or attempt == MAX_RETRIES then
             break
         end
 
-        logger.dbg("KaraKoApi: retrying", method, path, "after", result, code)
-        socket.sleep(2 ^ attempt)
+        -- This sleep blocks the UI thread, which is why the fallback backoff is
+        -- short and the server's own hint is clamped in retryAfterSeconds().
+        local delay = retry_after or 2 ^ attempt
+        logger.dbg("KaraKoApi: retrying", method, path, "in", delay, "s after", result, code)
+        socket.sleep(delay)
     end
 
     return ok, result, code
+end
+
+--- Seconds to wait, from a 429's Retry-After header.
+--
+-- Clamped: the value is server-controlled and the wait blocks the UI, so a
+-- header asking for an hour must not freeze the device for one.
+-- @treturn number|nil
+local function retryAfterSeconds(resp_headers)
+    -- luasocket lower-cases header names.
+    local seconds = tonumber(resp_headers and resp_headers["retry-after"])
+    if not seconds or seconds < 0 then return nil end
+    return math.min(seconds, 30)
 end
 
 function KarakeepApi:_request(method, url, body_json, filepath, quiet)
@@ -158,7 +186,7 @@ function KarakeepApi:_request(method, url, body_json, filepath, quiet)
         logger.err("KaraKoApi: HTTP", code, status, url)
     end
 
-    return false, "http_error", code
+    return false, "http_error", code, retryAfterSeconds(resp_headers)
 end
 
 -- Karakeep returns 401 for a bad token and 404 for a URL that is not the API at
@@ -311,14 +339,17 @@ function KarakeepApi:createHighlight(highlight)
     return self:call("POST", "/highlights", { body = highlight })
 end
 
---- List all lists, following pagination.
+--- List all lists. Karakeep returns them in one response, unpaginated.
 function KarakeepApi:getLists()
     local ok, result = self:call("GET", "/lists")
     if not ok then return false, result end
     return true, result.lists or {}
 end
 
---- List tags, following pagination.
+--- List tags, most-used first, capped at 200.
+--
+-- Not paginated: the only caller is the "choose a tag" picker, and a menu of
+-- more than 200 entries would be unusable on a device anyway.
 function KarakeepApi:getTags()
     local ok, result = self:call("GET", "/tags", { query = { limit = 200, sort = "usage" } })
     if not ok then return false, result end

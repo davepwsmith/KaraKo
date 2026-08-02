@@ -200,6 +200,77 @@ describe("findTextOffsets", function()
         local first = ArticleUtil.findTextOffsets(haystack, "10% (approx)")
         assertEqual(first, 8)
     end)
+
+    -- Karakeep indexes highlights the way JavaScript indexes a string, so the
+    -- offsets must count UTF-16 code units rather than bytes. Getting this
+    -- wrong misplaces every highlight in any article containing so much as a
+    -- curly quote ahead of it.
+    it("counts offsets in UTF-16 code units, not bytes", function()
+        -- "Café" is 5 bytes but 4 code units, so a byte offset would be one too
+        -- many from here on.
+        local accented = "Caf\195\169 is a word. The quick brown fox jumps."
+        local first, last = ArticleUtil.findTextOffsets(accented, "The quick brown fox")
+        assertEqual(first, 16)
+        assertEqual(last, 35)
+    end)
+
+    it("counts an astral character as a surrogate pair", function()
+        -- U+1F600, four bytes, two UTF-16 code units.
+        local emoji = "\240\159\152\128 and then the passage"
+        local first = ArticleUtil.findTextOffsets(emoji, "the passage")
+        assertEqual(first, 12)
+    end)
+
+    it("measures the passage itself in code units too", function()
+        local text_with_dash = "before \226\128\148 after the mark"
+        local first, last = ArticleUtil.findTextOffsets(text_with_dash, "\226\128\148 after")
+        assertEqual(first, 7)
+        assertEqual(last, 14) -- em-dash (1) + " after" (6)
+    end)
+
+    it("keeps the probe fallback on character boundaries", function()
+        -- Chosen so both cuts land inside a multi-byte sequence: the leading
+        -- one on a continuation byte, the trailing one on a lead byte whose
+        -- sequence is left incomplete. Cutting there anyway still matches
+        -- byte-wise, but reports offsets pointing into half a character.
+        local dash = "\226\128\148" -- em-dash: 3 bytes, 1 code unit
+        local prose = dash:rep(4) .. " a passage that is quite long indeed and carries on " .. dash:rep(4)
+        local needle = "ZZ" .. prose .. "ZZ"
+
+        local first, last = ArticleUtil.findTextOffsets(prose, needle)
+        assertEqual(first, 3)  -- snapped forward off the 3rd dash's last byte
+        assertEqual(last, 57)  -- snapped back off the trailing dash it bisected
+    end)
+
+    it("returns nil for a multi-byte passage that is simply absent", function()
+        assertNil(ArticleUtil.findTextOffsets(text, string.rep("\195\169", 21)))
+    end)
+end)
+
+describe("utf16Length", function()
+    it("counts ASCII one for one", function()
+        assertEqual(ArticleUtil.utf16Length("plain text"), 10)
+        assertEqual(ArticleUtil.utf16Length(""), 0)
+    end)
+
+    it("counts a two-byte sequence as one unit", function()
+        assertEqual(ArticleUtil.utf16Length("\195\169"), 1)       -- é
+        assertEqual(ArticleUtil.utf16Length("\194\1831"), 2)      -- Ã + "1"
+    end)
+
+    it("counts a three-byte sequence as one unit", function()
+        assertEqual(ArticleUtil.utf16Length("\226\128\148"), 1)   -- em-dash
+        assertEqual(ArticleUtil.utf16Length("\230\188\162"), 1)   -- 漢
+    end)
+
+    it("counts an astral character as two units", function()
+        assertEqual(ArticleUtil.utf16Length("\240\159\152\128"), 2)
+    end)
+
+    it("stays monotonic on invalid input", function()
+        assertEqual(ArticleUtil.utf16Length("\169\169"), 2) -- stray continuation bytes
+        assertEqual(ArticleUtil.utf16Length(nil), 0)
+    end)
 end)
 
 describe("collectImages", function()
@@ -474,6 +545,13 @@ describe("buildQuery", function()
 
     it("skips nil values", function()
         assertEqual(ArticleUtil.buildQuery{ cursor = nil, limit = 5 }, "?limit=5")
+    end)
+
+    -- Rather than "?cursor=table%3A%200x55f3…", which would go on the wire as a
+    -- real value and fail in a thoroughly confusing way.
+    it("drops values that cannot be encoded", function()
+        assertEqual(ArticleUtil.buildQuery{ cursor = {}, limit = 5 }, "?limit=5")
+        assertEqual(ArticleUtil.buildQuery{ cursor = print, limit = 5 }, "?limit=5")
     end)
 end)
 

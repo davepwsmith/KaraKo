@@ -4,8 +4,11 @@ Three layers, cheapest first. The first two run without a device.
 
 ```sh
 make check   # syntax + accidental globals, every file
-make test    # 100 specs, any Lua 5.1
+make test    # the spec suite, any Lua 5.1
 ```
+
+`make test` prints the count it actually ran, so it is not repeated here — a
+number written into prose only goes stale.
 
 Then `tools/epubcheck.lua` against a real KOReader (below), which is the one
 that matters: EPUB assembly is the part most likely to be wrong, and it needs
@@ -82,8 +85,7 @@ Git and Docker.
 ## tools/epubcheck.lua
 
 Drives `EpubBuilder.build()` against the real crengine and libarchive without
-starting the UI, and asserts on the result. 26 checks; exits non-zero on
-failure.
+starting the UI, and asserts on the result. Exits non-zero on failure.
 
 ```sh
 cd squashfs-root/usr/lib/koreader
@@ -103,7 +105,9 @@ KK_IMG_SERVER=http://127.0.0.1:8799/ ./luajit tools/epubcheck.lua
 It covers the things that silently degrade rather than crash: that crengine
 actually balances the ragged HTML, that `<script>` and `onclick` are gone, that
 entities become UTF-8, that image media types come from the bytes rather than
-the URL, and that an image which fails to download leaves no `<img>` behind.
+the URL, that an image which fails to download leaves no `<img>` behind, that
+the image size budget drops images without failing the article, and that a
+cancelled build abandons the file rather than writing half of one.
 
 ## What is verified, and what is not
 
@@ -121,16 +125,22 @@ Verified against KOReader v2026.07:
 Still unverified, and worth doing on a real Kobo:
 
 1. **A large image-heavy article**, timed. This is the main performance risk of
-   building EPUBs in Lua on a Kobo. Compare with *Embed images* off.
+   building EPUBs in Lua on a Kobo. Compare with *Embed images* off, and watch
+   for images dropped by the size budget (`MAX_IMAGE_TOTAL_BYTES`) in the log.
 2. **`api.lua` against a live Karakeep** — every endpoint here is exercised only
    against the OpenAPI spec, not a running server. Start with
    `Server → Save and test`.
 3. **Highlight round trip.** Highlight a passage appearing twice and confirm the
    first-occurrence behaviour in the README; then one appearing once, and check
-   the offsets land correctly in Karakeep's web UI.
-4. **Interrupted and capped syncs.** Cancel mid-download, and set *Articles per
-   sync* below your unread count; confirm nothing local is deleted either time.
-   The guard is `complete and not cancelled` in `synchronize()`.
+   the offsets land correctly in Karakeep's web UI. **Pick an article with
+   accented characters, curly quotes or em-dashes before the highlight** — that
+   is what the UTF-16 offset conversion exists for, and a byte-offset regression
+   would be invisible in pure-ASCII prose.
+4. **Interrupted and capped syncs.** Cancel mid-download — including during
+   *Fetching image n of m*, which is now honoured immediately rather than at the
+   next article — and set *Articles per sync* below your unread count; confirm
+   nothing local is deleted either time. The guard is `complete and not
+   cancelled` in `synchronize()`.
 5. **Archive from another device**, then sync, and confirm the unopened local
    copy is removed.
 6. **A self-signed certificate**, if your Karakeep uses one. KOReader has its own

@@ -147,6 +147,34 @@ else
     check("duplicate source is embedded once",
         readEntry(image_path, "OEBPS/images/img5.png") == nil)
     check("all paragraphs survive", select(2, body:gsub("<p>", "")) >= 5)
+
+    ----------------------------------------------------------------------------
+    print("Budgets and cancellation")
+    ----------------------------------------------------------------------------
+
+    -- A budget too small for even the first image: everything is dropped, and
+    -- the article is still built rather than failing outright.
+    local starved_path = "/tmp/kk-epubcheck-starved.epub"
+    local ok_starved = EpubBuilder.build(with_images, starved_path, {
+        include_images = true,
+        max_image_bytes_total = 1,
+    })
+    check("build succeeds with the image budget spent", ok_starved)
+    check("no image is embedded once the budget is spent",
+        readEntry(starved_path, "OEBPS/images/img1.png") == nil)
+    check("and no <img> is left pointing at one",
+        (readEntry(starved_path, "OEBPS/content.xhtml") or ""):find("<img", 1, true) == nil)
+
+    -- A progress callback that answers false is the reader cancelling.
+    local cancel_path = "/tmp/kk-epubcheck-cancel.epub"
+    os.remove(cancel_path)
+    local ok_cancel, cancel_reason = EpubBuilder.build(with_images, cancel_path, {
+        include_images = true,
+        progress = function() return false end,
+    })
+    check("a progress callback returning false aborts", ok_cancel == false)
+    check("and says why", cancel_reason == "cancelled", cancel_reason)
+    check("and leaves no file behind", readEntry(cancel_path, "mimetype") == nil)
 end
 
 --------------------------------------------------------------------------------

@@ -30,10 +30,24 @@ local COLOR_MAP = {
 -- skipped, as are highlights with no captured text.
 --
 -- @tparam string path Path to the downloaded article.
+-- @tparam[opt] table doc_settings An already-open sidecar, to save reopening it.
 -- @treturn table Array of { text, note, color, chapter, datetime }.
-function Highlights.collect(path)
-    local doc_settings = DocSettings:open(path)
-    local annotations = doc_settings:readSetting("annotations") or {}
+function Highlights.collect(path, doc_settings)
+    doc_settings = doc_settings or DocSettings:open(path)
+    local annotations = doc_settings:readSetting("annotations")
+
+    if not annotations then
+        -- KOReader merged its separate `highlight` and `bookmarks` tables into
+        -- one `annotations` array in 2024.04. Older sidecars keep highlights in
+        -- the old shape, which is not read here -- but say so, rather than
+        -- reporting an annotated document as having no highlights at all.
+        if doc_settings:readSetting("highlight") ~= nil then
+            logger.warn("KaraKo:", path,
+                "holds pre-2024 'highlight' sidecar data, which this plugin does not read;",
+                "sending highlights needs KOReader 2024.04 or newer")
+        end
+        return {}
+    end
 
     local collected = {}
     for _, annotation in ipairs(annotations) do
@@ -78,10 +92,11 @@ end
 -- @tparam table api KarakeepApi instance.
 -- @tparam string bookmark_id
 -- @tparam string path Path to the downloaded article.
+-- @tparam[opt] table doc_settings An already-open sidecar, to save reopening it.
 -- @treturn number Highlights created.
 -- @treturn number Highlights sent without resolved offsets.
-function Highlights.push(api, bookmark_id, path)
-    local collected = Highlights.collect(path)
+function Highlights.push(api, bookmark_id, path, doc_settings)
+    local collected = Highlights.collect(path, doc_settings)
     if #collected == 0 then return 0, 0 end
 
     local existing = fetchExisting(api, bookmark_id)

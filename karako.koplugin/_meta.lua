@@ -5,5 +5,5 @@ return {
     -- clippings the other way and can be installed alongside this one.
     fullname = _("KaraKo (Karakeep reader)"),
     description = _([[Downloads unread Karakeep articles for offline reading, and sends read status and highlights back.]]),
-    version = "0.5.0",
+    version = "0.6.0",
 }
