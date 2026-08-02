@@ -53,6 +53,12 @@ function KaraKo:onDispatcherRegisterActions()
         title = _("Synchronise KaraKo"),
         general = true,
     })
+    Dispatcher:registerAction("karako_redownload", {
+        category = "none",
+        event = "RedownloadKarako",
+        title = _("Rebuild all KaraKo articles"),
+        general = true,
+    })
     Dispatcher:registerAction("karako_go_to_directory", {
         category = "none",
         event = "GoToKarakoDirectory",
@@ -339,6 +345,14 @@ function KaraKo:addToMainMenu(menu_items)
             {
                 text = _("Synchronise now"),
                 callback = function() self:onSynchronizeKarako() end,
+            },
+            {
+                text = _("Rebuild all articles"),
+                help_text = _([[
+Re-fetches every article on the device and builds it again, instead of skipping the ones already downloaded.
+
+Use this after upgrading KaraKo, to pick up an improvement to how EPUBs are built. Highlights and reading position are kept.]]),
+                callback = function() self:onRedownloadKarako() end,
             },
             {
                 text = _("Send read status and highlights"),
@@ -944,6 +958,53 @@ end
 -- Sync
 --------------------------------------------------------------------------------
 
+--- Rebuild every article already on the device.
+--
+-- An article on the device is normally skipped for ever, which is right almost
+-- always but leaves no way to pick up an improvement to how EPUBs are built --
+-- short of deleting files by hand and guessing which ones were affected.
+--
+-- Existing copies are written over in place rather than deleted and refetched,
+-- so the sidecar keeps its name and your highlights and reading position stay
+-- attached. A build that fails leaves the copy already on the device untouched,
+-- because EpubBuilder assembles into a temporary file and only renames over the
+-- original once the whole archive is written.
+function KaraKo:onRedownloadKarako()
+    if not self:isReady() then
+        UIManager:show(InfoMessage:new{
+            text = _("Set the server address, API key and download folder first."),
+        })
+        return
+    end
+
+    local count = 0
+    for _ in pairs(self:getLocalArticles()) do count = count + 1 end
+
+    if count == 0 then
+        UIManager:show(InfoMessage:new{ text = _("No articles on the device to rebuild.") })
+        return true
+    end
+
+    local ConfirmBox = require("ui/widget/confirmbox")
+    UIManager:show(ConfirmBox:new{
+        text = T(N_("Rebuild the article on the device from Karakeep?",
+                    "Rebuild all %1 articles on the device from Karakeep?", count), count) ..
+            "\n\n" ..
+            _([[Read status and highlights are sent to Karakeep first, so nothing is lost. Your highlights stay on the device too, though a rebuilt article may position them differently.
+
+Only articles still unarchived in Karakeep come back; anything archived there is left alone. This re-fetches everything, so it is slower than an ordinary sync.]]),
+        ok_text = _("Rebuild"),
+        ok_callback = function()
+            NetworkMgr:runWhenOnline(function()
+                local Trapper = require("ui/trapper")
+                Trapper:wrap(function() self:synchronize(false, true) end)
+            end)
+        end,
+    })
+
+    return true
+end
+
 function KaraKo:onSynchronizeKarako()
     if not self:isReady() then
         UIManager:show(InfoMessage:new{
@@ -1002,7 +1063,7 @@ flatpak info --show-permissions rocks.koreader.KOReader]]), dir)
     return true
 end
 
-function KaraKo:synchronize(quiet)
+function KaraKo:synchronize(quiet, force_redownload)
     local Trapper = require("ui/trapper")
     local api = self:getApi()
 
@@ -1056,7 +1117,9 @@ function KaraKo:synchronize(quiet)
     local first_failure
 
     for index, bookmark in ipairs(remote) do
-        if local_articles[bookmark.id] then
+        local existing = local_articles[bookmark.id]
+
+        if existing and not force_redownload then
             skipped = skipped + 1
         else
             local content = bookmark.content or {}
@@ -1071,7 +1134,7 @@ function KaraKo:synchronize(quiet)
                 break
             end
 
-            local built, reason = self:downloadArticle(api, bookmark)
+            local built, reason = self:downloadArticle(api, bookmark, existing)
             if built then
                 downloaded = downloaded + 1
             elseif reason == "cancelled" then
@@ -1095,14 +1158,17 @@ function KaraKo:synchronize(quiet)
     end
 
     logger.info(string.format(
-        "KaraKo: sync done - %d fetched, %d downloaded, %d skipped, %d failed, %d removed (complete=%s cancelled=%s)",
-        #remote, downloaded, skipped, failed, removed, tostring(complete), tostring(cancelled)))
+        "KaraKo: sync done - %d fetched, %d downloaded, %d skipped, %d failed, %d removed (complete=%s cancelled=%s force=%s)",
+        #remote, downloaded, skipped, failed, removed,
+        tostring(complete), tostring(cancelled), tostring(force_redownload or false)))
 
     Trapper:reset()
     self:refreshFileManager()
 
     local lines = {
-        T(N_("Downloaded %1 article.", "Downloaded %1 articles.", downloaded), downloaded),
+        force_redownload
+            and T(N_("Rebuilt %1 article.", "Rebuilt %1 articles.", downloaded), downloaded)
+            or T(N_("Downloaded %1 article.", "Downloaded %1 articles.", downloaded), downloaded),
     }
     if skipped > 0 then
         table.insert(lines, T(N_("%1 already on the device.", "%1 already on the device.", skipped), skipped))
@@ -1277,7 +1343,17 @@ function KaraKo:resolveContent(api, bookmark)
     return nil
 end
 
-function KaraKo:downloadArticle(api, bookmark)
+--- Build one article and write it to the download folder.
+--
+-- @tparam table api
+-- @tparam table bookmark
+-- @tparam[opt] string existing_path Overwrite this copy instead of computing a
+--   fresh name. Used when re-downloading: the sidecar is keyed on the filename,
+--   so reusing it is what keeps reading position and highlights attached, and a
+--   title edited in Karakeep since would otherwise leave a second copy behind.
+-- @treturn bool ok
+-- @treturn string|nil Reason when ok is false.
+function KaraKo:downloadArticle(api, bookmark, existing_path)
     local Trapper = require("ui/trapper")
     local content = bookmark.content or {}
     local title = bookmark.title or content.title or content.url
@@ -1295,8 +1371,8 @@ function KaraKo:downloadArticle(api, bookmark)
         return false, _("no readable content")
     end
 
-    local filename = ArticleUtil.buildFilename(bookmark.id, title)
-    local filepath = ffiUtil.joinPath(self.directory, filename)
+    local filepath = existing_path
+        or ffiUtil.joinPath(self.directory, ArticleUtil.buildFilename(bookmark.id, title))
 
     local ok, err = EpubBuilder.build(bookmark, filepath, {
         body_html = body_html,

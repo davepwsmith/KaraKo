@@ -267,6 +267,32 @@ Notes on how it behaves:
 - The file holds your API key in plain text. Keep it readable only by you, and
   give the device its own key so it can be revoked on its own.
 
+## Rebuilding articles you already have
+
+An article on the device is skipped on every later sync — that is what stops a
+sync re-fetching your whole library each time. It also means an improvement to
+how EPUBs are built reaches only *new* articles, with no way to apply it to the
+ones you have short of deleting files by hand and guessing which were affected.
+
+**KaraKo → Rebuild all articles** re-fetches every article on the device and
+builds it again. Use it after upgrading KaraKo. It is also bindable as a gesture,
+under **Settings → Gestures**.
+
+- Read status and highlights are **sent to Karakeep first**, so nothing is lost
+  server-side even if a rebuild goes wrong.
+- Existing copies are **written over in place**, keeping the filename, so the
+  `.sdr` sidecar stays attached and your highlights and reading position survive.
+  A rebuilt article may position highlights differently, though, since they are
+  anchored into a document that has changed.
+- If the title changed in Karakeep since you downloaded it, the new title goes
+  into the EPUB's metadata but the **file keeps its old name** — renaming it
+  would strand the sidecar and leave you with two copies.
+- A build that fails leaves the copy already on the device untouched: EPUBs are
+  assembled into a temporary file and only renamed over the original once the
+  whole archive is written.
+- Only articles still unarchived in Karakeep come back. Anything archived there
+  is out of the sync scope and is left alone.
+
 ## How articles are named
 
 Downloads are named `Article Title [kk-id_abc123].epub`. The bracketed marker is
