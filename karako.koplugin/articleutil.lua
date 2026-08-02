@@ -394,6 +394,95 @@ end
 -- @tparam[opt=30] number max_images
 -- @treturn string Rewritten HTML.
 -- @treturn table Array of { src = <remote url>, path = "images/img1.jpg" }.
+local B64_LOOKUP = {}
+do
+    local chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    for i = 1, #chars do B64_LOOKUP[chars:byte(i)] = i - 1 end
+    -- The URL-safe alphabet, which turns up in the wild often enough to accept.
+    B64_LOOKUP[string.byte("-")] = 62
+    B64_LOOKUP[string.byte("_")] = 63
+end
+
+--- Decode base64. Lua 5.1 has none, and articleutil.lua stays KOReader-free.
+--
+-- Four characters at a time rather than a byte at a time: an inlined photograph
+-- runs to megabytes, and a Kobo is slow enough that the difference shows.
+--
+-- @tparam string s
+-- @treturn string|nil Decoded bytes, or nil if this is not valid base64.
+function ArticleUtil.decodeBase64(s)
+    if type(s) ~= "string" then return nil end
+
+    s = s:gsub("%s+", ""):gsub("=+$", "")
+    if s == "" or #s % 4 == 1 then return nil end
+
+    local out, n, i, len = {}, 0, 1, #s
+
+    while i + 3 <= len do
+        local a, b, c, d = s:byte(i, i + 3)
+        a, b, c, d = B64_LOOKUP[a], B64_LOOKUP[b], B64_LOOKUP[c], B64_LOOKUP[d]
+        if not (a and b and c and d) then return nil end
+
+        local x = ((a * 64 + b) * 64 + c) * 64 + d
+        n = n + 1
+        out[n] = string.char(math.floor(x / 65536) % 256,
+                             math.floor(x / 256) % 256,
+                             x % 256)
+        i = i + 4
+    end
+
+    -- A tail of two or three characters carries one or two bytes.
+    local rest = len - i + 1
+    if rest == 2 or rest == 3 then
+        local a, b, c = s:byte(i, i + rest - 1)
+        a, b = B64_LOOKUP[a], B64_LOOKUP[b]
+        if not (a and b) then return nil end
+
+        if rest == 2 then
+            out[n + 1] = string.char((a * 4 + math.floor(b / 16)) % 256)
+        else
+            c = B64_LOOKUP[c]
+            if not c then return nil end
+            out[n + 1] = string.char((a * 4 + math.floor(b / 16)) % 256,
+                                     ((b % 16) * 16 + math.floor(c / 4)) % 256)
+        end
+    elseif rest ~= 1 and rest ~= 0 then
+        return nil
+    end
+
+    return table.concat(out)
+end
+
+--- Decode a data: URI to its bytes.
+--
+-- These are how a saved page archive carries its images: SingleFile, which is
+-- what produces a precrawled archive, inlines every resource rather than
+-- leaving it pointing at the network -- that is the whole point of the format.
+--
+-- @tparam string src
+-- @treturn string|nil Decoded bytes, or nil if this is not a data: URI.
+function ArticleUtil.decodeDataUri(src)
+    if type(src) ~= "string" then return nil end
+
+    local meta, payload = src:match("^%s*[dD][aA][tT][aA]:([^,]*),(.*)$")
+    if not meta then return nil end
+
+    if meta:lower():find("base64", 1, true) then
+        return ArticleUtil.decodeBase64(payload)
+    end
+
+    -- Not base64: percent-encoded text, which is how an inline SVG usually
+    -- arrives.
+    return (payload:gsub("%%(%x%x)", function(hex)
+        return string.char(tonumber(hex, 16))
+    end))
+end
+
+-- Below this, an inlined image is taken for a placeholder rather than the
+-- picture: a 1x1 spacer GIF is about 43 bytes and a blurred stand-in a few
+-- hundred. Anything genuinely worth showing on an e-reader is larger.
+local MIN_INLINE_IMAGE_BYTES = 1024
+
 -- Attributes a lazy-loading site puts the real image in, best first. The plain
 -- `src` on such a page is a placeholder -- a 1x1 GIF, a blur, or a data: URI --
 -- so it is consulted last.
@@ -488,9 +577,10 @@ function ArticleUtil.imageSourceFrom(attrs)
     local src = attribute(attrs, "src")
     if not src then return nil end
 
-    -- A placeholder is worse than nothing: it would occupy the slot and stop
-    -- anything better being used.
-    if src:match("^%s*[dD][aA][tT][aA]:") then return nil end
+    -- A named placeholder is worse than nothing: it would occupy the slot and
+    -- stop anything better being used. A data: URI is *not* rejected here --
+    -- in a saved page archive it is the real picture, and collectImages() tells
+    -- the two apart by size.
     if src:lower():match("placeholder") or src:lower():match("blank%.") then return nil end
 
     return src
@@ -508,23 +598,38 @@ function ArticleUtil.collectImages(html, max_images)
 
         if not src or src == "" then return "" end
 
-        -- Only absolute http(s) sources are usable: Karakeep gives us the
-        -- article out of context, so a relative path has nothing to resolve
-        -- against, and data: URIs are already inline.
-        if not src:match("^[hH][tT][tT][pP][sS]?://") then return "" end
+        -- An inlined image carries its own bytes, so there is nothing to fetch.
+        -- This is the ordinary case in a saved page archive.
+        local inline = ArticleUtil.decodeDataUri(src)
 
-        local existing = by_src[src]
+        local key, ext
+        if inline then
+            if #inline < MIN_INLINE_IMAGE_BYTES then return "" end -- a placeholder
+            -- Keyed on a digest rather than the URI: the URI is the whole image
+            -- in base64, and holding a second reference to every one of them
+            -- just to spot duplicates would be megabytes for nothing.
+            key = string.format("inline:%d:%s", #inline, inline:sub(1, 32))
+            ext = ArticleUtil.extensionForType(ArticleUtil.sniffImageType(inline))
+        else
+            -- Otherwise only absolute http(s) is usable: Karakeep gives us the
+            -- article out of context, so a relative path has nothing to resolve
+            -- against.
+            if not src:match("^[hH][tT][tT][pP][sS]?://") then return "" end
+            key = src
+            ext = ArticleUtil.imageExtension(src)
+        end
+
+        local existing = by_src[key]
         if existing then
             return string.format('<img src="%s"/>', ArticleUtil.escapeXml(existing))
         end
 
         if #images >= max_images then return "" end
 
-        local ext = ArticleUtil.imageExtension(src)
         local path = string.format("images/img%d%s", #images + 1, ext)
 
-        table.insert(images, { src = src, path = path })
-        by_src[src] = path
+        table.insert(images, { src = not inline and src or nil, data = inline, path = path })
+        by_src[key] = path
 
         -- No alt="": crengine's getBalancedHTML() rewrites an empty attribute
         -- to a bare one ("alt"), which is not well-formed XML.
@@ -556,6 +661,16 @@ local MEDIA_TYPES = {
     [".jpg"] = "image/jpeg", [".png"] = "image/png", [".gif"] = "image/gif",
     [".webp"] = "image/webp", [".svg"] = "image/svg+xml", [".bmp"] = "image/bmp",
 }
+
+--- The file extension an EPUB image of this media type should carry.
+-- @tparam string|nil media_type
+-- @treturn string
+function ArticleUtil.extensionForType(media_type)
+    for ext, known in pairs(MEDIA_TYPES) do
+        if known == media_type then return ext end
+    end
+    return ".jpg"
+end
 
 --- Map a local image path to its EPUB media type.
 -- @tparam string path

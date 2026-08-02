@@ -329,7 +329,16 @@ function EpubBuilder.build(bookmark, filepath, opts)
         end
 
         local data, why
-        if budget <= 0 then
+        if candidate.data then
+            -- Already inline: a saved page archive carries its images as data:
+            -- URIs, so there is nothing to fetch. Still charged to the budget,
+            -- since it occupies memory just the same.
+            if #candidate.data > budget then
+                why = "larger than the remaining image budget"
+            else
+                data = candidate.data
+            end
+        elseif budget <= 0 then
             why = "image budget for this article is spent"
         else
             data, why = fetchUrl(candidate.src, math.min(budget, MAX_IMAGE_BYTES),
@@ -348,7 +357,8 @@ function EpubBuilder.build(bookmark, filepath, opts)
             table.insert(images, { path = candidate.path, media_type = media_type })
             image_data[candidate.path] = data
         else
-            logger.dbg("KaraKo: dropping image", candidate.src,
+            logger.dbg("KaraKo: dropping image",
+                candidate.src or string.format("inline (%d bytes)", #(candidate.data or "")),
                 media_type or why or "unfetchable")
         end
     end
