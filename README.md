@@ -1,3 +1,8 @@
+> [!CAUTION]
+> This plugin is vibe-coded with Claude Code. I have done my best to review the
+> output and believe it to be reasonable, and have tested on a Kobo reader - but
+> treat it with the caution that anything vibe-coded deserves!
+
 # KaraKo
 
 Read your [Karakeep](https://karakeep.app) articles on a Kobo, via
