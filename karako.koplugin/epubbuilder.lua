@@ -340,7 +340,10 @@ function EpubBuilder.build(bookmark, filepath, opts)
         -- and crengine will not render an image whose type is misdeclared.
         local media_type = data and ArticleUtil.sniffImageType(data)
 
-        if data and media_type and media_type ~= "image/webp" then
+        -- WebP is included: crengine links libwebp and renders it. An earlier
+        -- version of this excluded WebP on the assumption it could not, which
+        -- silently dropped a large share of images from modern sites.
+        if data and media_type then
             budget = budget - #data
             table.insert(images, { path = candidate.path, media_type = media_type })
             image_data[candidate.path] = data

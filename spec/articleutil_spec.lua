@@ -273,6 +273,77 @@ describe("utf16Length", function()
     end)
 end)
 
+describe("imageSourceFrom", function()
+    it("prefers a lazy-loading attribute over a placeholder src", function()
+        assertEqual(ArticleUtil.imageSourceFrom(
+            ' src="https://e.com/1x1.gif" data-src="https://e.com/real.jpg"'),
+            "https://e.com/real.jpg")
+    end)
+
+    it("recognises the other common lazy attributes", function()
+        for _, name in ipairs({ "data-original", "data-lazy-src", "data-actualsrc" }) do
+            assertEqual(ArticleUtil.imageSourceFrom(
+                string.format(' %s="https://e.com/r.jpg" src="https://e.com/p.gif"', name)),
+                "https://e.com/r.jpg", name)
+        end
+    end)
+
+    it("falls back to srcset when there is no data- attribute", function()
+        assertEqual(ArticleUtil.imageSourceFrom(
+            ' srcset="https://e.com/a.jpg 480w, https://e.com/b.jpg 1200w"'),
+            "https://e.com/b.jpg")
+    end)
+
+    it("uses plain src when that is all there is", function()
+        assertEqual(ArticleUtil.imageSourceFrom(' src="https://e.com/a.jpg"'),
+            "https://e.com/a.jpg")
+    end)
+
+    it("rejects a data: URI or an obvious placeholder", function()
+        assertNil(ArticleUtil.imageSourceFrom(' src="data:image/gif;base64,R0lG"'))
+        assertNil(ArticleUtil.imageSourceFrom(' src="https://e.com/placeholder.png"'))
+        assertNil(ArticleUtil.imageSourceFrom(' src="https://e.com/blank.gif"'))
+    end)
+
+    it("decodes entities in the URL", function()
+        assertEqual(ArticleUtil.imageSourceFrom(' data-src="https://e.com/a.jpg?w=1&amp;h=2"'),
+            "https://e.com/a.jpg?w=1&h=2")
+    end)
+
+    it("is case-insensitive about attribute names", function()
+        assertEqual(ArticleUtil.imageSourceFrom(' DATA-SRC="https://e.com/a.jpg"'),
+            "https://e.com/a.jpg")
+    end)
+
+    it("returns nil for an img with nothing usable", function()
+        assertNil(ArticleUtil.imageSourceFrom(' alt="x"'))
+        assertNil(ArticleUtil.imageSourceFrom(nil))
+    end)
+end)
+
+describe("pickFromSrcset", function()
+    it("takes the widest candidate that suits an e-reader", function()
+        assertEqual(ArticleUtil.pickFromSrcset("a.jpg 400w, b.jpg 1200w, c.jpg 3000w"), "b.jpg")
+    end)
+
+    it("falls back to the narrowest when all are oversized", function()
+        assertEqual(ArticleUtil.pickFromSrcset("a.jpg 2400w, b.jpg 4000w"), "a.jpg")
+    end)
+
+    it("handles a single candidate with no descriptor", function()
+        assertEqual(ArticleUtil.pickFromSrcset("only.jpg"), "only.jpg")
+    end)
+
+    it("copes with untidy whitespace", function()
+        assertEqual(ArticleUtil.pickFromSrcset("  a.jpg   400w ,  b.jpg  900w  "), "b.jpg")
+    end)
+
+    it("returns nil for nothing", function()
+        assertNil(ArticleUtil.pickFromSrcset(""))
+        assertNil(ArticleUtil.pickFromSrcset(nil))
+    end)
+end)
+
 describe("collectImages", function()
     it("rewrites sources and collects them in order", function()
         local html = '<p><img src="https://e.com/a.png"/>x<img src="https://e.com/b.jpg"/></p>'
@@ -292,6 +363,14 @@ describe("collectImages", function()
         assertEqual(#images, 1)
         local count = select(2, out:gsub('src="images/img1%.png"', ""))
         assertEqual(count, 2)
+    end)
+
+    it("picks up lazy-loaded images", function()
+        local html = '<img src="https://e.com/1x1.gif" data-src="https://e.com/real.jpg">'
+        local out, images = ArticleUtil.collectImages(html)
+        assertEqual(#images, 1)
+        assertEqual(images[1].src, "https://e.com/real.jpg")
+        assertMatch(out, 'src="images/img1.jpg"')
     end)
 
     it("drops data URIs, relative paths and sourceless tags", function()

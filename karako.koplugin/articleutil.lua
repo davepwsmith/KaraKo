@@ -183,9 +183,12 @@ function ArticleUtil.escapeXml(s)
     return s
 end
 
--- Case-insensitive pattern for a tag name, e.g. "script" -> "[sS][cC][rR][iI][pP][tT]".
+-- Case-insensitive pattern for a tag or attribute name, e.g. "script" ->
+-- "[sS][cC][rR][iI][pP][tT]". Non-letters are escaped first, so the hyphen in
+-- an attribute like "data-src" stays a literal instead of becoming the lazy
+-- repeat quantifier it would otherwise be.
 local function anyCase(word)
-    return (word:gsub("%a", function(c)
+    return (word:gsub("%W", "%%%0"):gsub("%a", function(c)
         return "[" .. c:lower() .. c:upper() .. "]"
     end))
 end
@@ -209,8 +212,21 @@ function ArticleUtil.sanitizeHtml(html)
     html = html:gsub("<!%-%-.-%-%->", "")
     html = html:gsub("<[%?!][^>]*>", "") -- doctypes and processing instructions
 
+    -- <noscript> is where a lazy-loading site keeps the plain <img> that works
+    -- without JavaScript, so throwing the element away throws away the picture.
+    -- Its contents are unwrapped when there is an image among them, and dropped
+    -- otherwise -- what is left in that case is a "please enable JavaScript"
+    -- notice that helps nobody on an e-reader.
+    local noscript = anyCase("noscript")
+    html = html:gsub("<%s*" .. noscript .. "[^>]*>(.-)<%s*/%s*" .. noscript .. "%s*>",
+        function(inner)
+            if inner:find("<%s*[iI][mM][gG]") then return inner end
+            return ""
+        end)
+    html = html:gsub("<%s*/?%s*" .. noscript .. "[^>]*>", "") -- orphans
+
     for _, tag in ipairs({ "script", "style", "iframe", "object", "embed",
-                           "noscript", "form", "input", "button", "svg", "canvas" }) do
+                           "form", "input", "button", "svg", "canvas" }) do
         html = stripElement(html, tag)
     end
 
@@ -354,6 +370,108 @@ end
 -- @tparam[opt=30] number max_images
 -- @treturn string Rewritten HTML.
 -- @treturn table Array of { src = <remote url>, path = "images/img1.jpg" }.
+-- Attributes a lazy-loading site puts the real image in, best first. The plain
+-- `src` on such a page is a placeholder -- a 1x1 GIF, a blur, or a data: URI --
+-- so it is consulted last.
+local LAZY_ATTRS = {
+    "data-src", "data-original", "data-lazy-src", "data-actualsrc",
+    "data-hi-res-src", "data-full-src", "data-image-src",
+}
+
+--- Read one attribute out of a tag's attribute text.
+-- @tparam string attrs
+-- @tparam string name
+-- @treturn string|nil
+local function attribute(attrs, name)
+    local pattern = (name:gsub("%W", "%%%0"):gsub("%a", function(c)
+        return "[" .. c:lower() .. c:upper() .. "]"
+    end))
+    local value = attrs:match(pattern .. "%s*=%s*\"([^\"]*)\"")
+        or attrs:match(pattern .. "%s*=%s*'([^']*)'")
+    if not value then return nil end
+
+    value = ArticleUtil.decodeEntities(value)
+    value = value:gsub("^%s+", ""):gsub("%s+$", "")
+    if value == "" then return nil end
+    return value
+end
+
+-- Roughly the widest a 300 dpi e-reader can use. Anything larger is downscaled
+-- for display anyway, so fetching it only costs time, memory and storage.
+local USEFUL_IMAGE_WIDTH = 1600
+
+--- Choose one URL from a srcset.
+--
+-- A srcset is "url 480w, url 1200w" or "url 1x, url 2x". The widest candidate
+-- that is still sensible for an e-reader screen wins; failing that, the
+-- narrowest available, since something is better than nothing.
+--
+-- @tparam string|nil srcset
+-- @treturn string|nil
+function ArticleUtil.pickFromSrcset(srcset)
+    if type(srcset) ~= "string" or srcset == "" then return nil end
+
+    local best, best_width
+    local smallest, smallest_width
+
+    for candidate in (srcset .. ","):gmatch("%s*(.-)%s*,") do
+        if candidate ~= "" then
+            local url = candidate:match("^(%S+)")
+            local descriptor = candidate:match("%s(%d+)[wW]$")
+                or candidate:match("%s(%d+)%.?%d*[xX]$")
+
+            if url then
+                -- A bare URL with no descriptor is treated as full width, since
+                -- it is the only candidate the author offered.
+                local width = tonumber(descriptor) or USEFUL_IMAGE_WIDTH
+                -- "2x" style descriptors are multipliers, not widths.
+                if candidate:match("[xX]$") then width = width * 800 end
+
+                if width <= USEFUL_IMAGE_WIDTH and (not best_width or width > best_width) then
+                    best, best_width = url, width
+                end
+                if not smallest_width or width < smallest_width then
+                    smallest, smallest_width = url, width
+                end
+            end
+        end
+    end
+
+    return best or smallest
+end
+
+--- Work out which URL an <img> really points at.
+--
+-- Karakeep's extraction keeps the page's original markup, so an article from a
+-- lazy-loading site arrives with the real image in a data- attribute or a
+-- srcset and a placeholder in `src`. Reading `src` alone is why such articles
+-- came through with no pictures.
+--
+-- @tparam string attrs The attribute text of an <img> tag.
+-- @treturn string|nil
+function ArticleUtil.imageSourceFrom(attrs)
+    if type(attrs) ~= "string" then return nil end
+
+    for _, name in ipairs(LAZY_ATTRS) do
+        local value = attribute(attrs, name)
+        if value then return value end
+    end
+
+    local from_srcset = ArticleUtil.pickFromSrcset(
+        attribute(attrs, "data-srcset") or attribute(attrs, "srcset"))
+    if from_srcset then return from_srcset end
+
+    local src = attribute(attrs, "src")
+    if not src then return nil end
+
+    -- A placeholder is worse than nothing: it would occupy the slot and stop
+    -- anything better being used.
+    if src:match("^%s*[dD][aA][tT][aA]:") then return nil end
+    if src:lower():match("placeholder") or src:lower():match("blank%.") then return nil end
+
+    return src
+end
+
 function ArticleUtil.collectImages(html, max_images)
     if type(html) ~= "string" then return "", {} end
     max_images = max_images or 30
@@ -362,13 +480,9 @@ function ArticleUtil.collectImages(html, max_images)
     local by_src = {}
 
     local rewritten = html:gsub("<%s*[iI][mM][gG]([^>]*)>", function(attrs)
-        local src = attrs:match("[sS][rR][cC]%s*=%s*\"([^\"]*)\"")
-            or attrs:match("[sS][rR][cC]%s*=%s*'([^']*)'")
+        local src = ArticleUtil.imageSourceFrom(attrs)
 
         if not src or src == "" then return "" end
-
-        src = ArticleUtil.decodeEntities(src)
-        src = src:gsub("^%s+", ""):gsub("%s+$", "")
 
         -- Only absolute http(s) sources are usable: Karakeep gives us the
         -- article out of context, so a relative path has nothing to resolve

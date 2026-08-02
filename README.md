@@ -364,10 +364,19 @@ mapped onto the four Karakeep supports; anything else becomes yellow.
   Kobo hardware than a plain text sync — turn off *Embed images* if you mind.
 - **Only `link` and `text` bookmarks sync.** Asset bookmarks (uploaded PDFs and
   images) are skipped; they are already in a readable format and do not need us.
-- **WebP images are skipped**, because crengine does not render them. Image types
-  are detected from their magic bytes rather than the URL's extension, and any
-  image that fails to download has its `<img>` removed so you never see a broken
-  image box.
+- **Lazy-loaded images are resolved.** Karakeep's extraction keeps a page's
+  original markup, so articles from sites that lazy-load arrive with a
+  placeholder in `src` and the real picture in `data-src`, `data-original`,
+  `srcset` and friends. Those are read in preference to `src`, and a `<noscript>`
+  block is unwrapped when it contains the plain `<img>` such sites hide there.
+  From a `srcset`, the widest candidate up to 1600px wins.
+- **WebP is embedded.** crengine links libwebp and renders it — verified by
+  page count, since a tall WebP takes a one-page document to three. An earlier
+  version excluded WebP on the assumption it could not, which quietly dropped a
+  large share of images from modern sites.
+- Image types are detected from their magic bytes rather than the URL's
+  extension, and any image that fails to download has its `<img>` removed so you
+  never see a broken image box.
 - **Image embedding is bounded**, at 2 MB for any one image and 8 MB across an
   article, on top of the *Embed images* count limit. Every image is held in
   memory until the EPUB is written, and a Kobo has little to spare; an article
