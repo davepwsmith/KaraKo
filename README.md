@@ -267,6 +267,29 @@ Notes on how it behaves:
 - The file holds your API key in plain text. Keep it readable only by you, and
   give the device its own key so it can be revoked on its own.
 
+## How articles are named
+
+Downloads are named `Article Title [kk-id_abc123].epub`. The bracketed marker is
+how the Karakeep bookmark ID survives a round trip through the filesystem — it is
+what lets a later sync know that an article is already on the device, archive the
+right bookmark when you finish it, and attach your highlights to it. There is no
+separate index to fall out of step.
+
+It sits at the **end** so the title is what you see. Earlier versions led with it,
+which put an opaque ID where the title should be and, since a file browser
+truncates the end of a long name, pushed the title out of sight entirely. It also
+made the folder sort by ID rather than alphabetically.
+
+Both forms are read back the same way, so upgrading orphans nothing and
+re-downloads nothing — articles already on the device simply keep their old
+names. **KaraKo → Tidy up old file names** renames them if you want them
+consistent; reading progress, highlights and collection membership follow the
+file.
+
+Renaming an article yourself is fine, as long as the `[kk-id_…]` marker survives
+somewhere in the name. Remove it and KaraKo stops recognising the file: it will
+download the article again and will never archive it.
+
 ## Automatic syncing
 
 Off by default. **KaraKo → Sync when Wi-Fi connects** reacts to the network

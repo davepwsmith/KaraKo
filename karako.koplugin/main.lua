@@ -402,6 +402,15 @@ Editing the file later does nothing by itself -- choose "Reload it now" to pull 
                 callback = function(touchmenu_instance) self:setDownloadDirectory(touchmenu_instance) end,
             },
             {
+                text = _("Tidy up old file names"),
+                help_text = _([[
+Articles used to be named "[kk-id_…] Title", which hid the title behind the ID in the file browser. New downloads are named "Title [kk-id_…]" instead.
+
+This renames the ones already on the device. Reading progress and highlights follow the file.]]),
+                keep_menu_open = true,
+                callback = function() self:renameLegacyArticles() end,
+            },
+            {
                 text = _("Embed images"),
                 checked_func = function() return self.download_images end,
                 callback = function() self.download_images = not self.download_images end,
@@ -839,6 +848,68 @@ function KaraKo:getLocalArticles(dir, map, depth)
     end
 
     return map
+end
+
+--- Rename articles still carrying the leading "[kk-id_…] " marker.
+--
+-- Both forms read back the same, so this is cosmetic and entirely optional --
+-- nothing breaks if it is never run. It follows what FileManager does for a
+-- rename, so that the sidecar (reading position, highlights), the history entry
+-- and any collection membership travel with the file rather than being
+-- stranded on a name that no longer exists.
+function KaraKo:renameLegacyArticles()
+    if not self.directory or lfs.attributes(self.directory, "mode") ~= "directory" then
+        UIManager:show(InfoMessage:new{ text = _("Set the download folder first.") })
+        return
+    end
+
+    local ReadCollection = require("readcollection")
+    local ReadHistory = require("readhistory")
+
+    local renamed, skipped = 0, 0
+
+    for id, path in pairs(self:getLocalArticles()) do
+        if ArticleUtil.hasLegacyName(path) then
+            local dir = path:match("^(.*)/[^/]+$") or self.directory
+            local name = path:match("([^/]+)$")
+            local ext = name:match("(%.[%a%d]+)$") or ".epub"
+
+            -- Recover the title from between the old marker and the extension,
+            -- rather than refetching it: the bookmark may well be archived by
+            -- now, and the name on disk is what the reader already knows it by.
+            local title = name:match("^%[kk%-id_.-%]%s*(.*)" .. ext:gsub("%W", "%%%0") .. "$")
+
+            local target = ffiUtil.joinPath(dir, ArticleUtil.buildFilename(id, title, ext))
+
+            if target == path or lfs.attributes(target, "mode") then
+                skipped = skipped + 1
+            elseif os.rename(path, target) then
+                DocSettings.updateLocation(path, target)
+                ReadHistory:updateItem(path, target)
+                ReadCollection:updateItem(path, target)
+                renamed = renamed + 1
+            else
+                logger.warn("KaraKo: could not rename", path, "to", target)
+                skipped = skipped + 1
+            end
+        end
+    end
+
+    local message
+    if renamed == 0 and skipped == 0 then
+        message = _("Nothing to rename — all file names are already up to date.")
+    else
+        message = T(_("Renamed %1 article(s)."), renamed)
+        if skipped > 0 then
+            message = message .. "\n" .. T(_("%1 left alone."), skipped)
+        end
+    end
+
+    UIManager:show(InfoMessage:new{ text = message })
+
+    if renamed > 0 and FileManager.instance then
+        FileManager.instance:onRefresh()
+    end
 end
 
 --- Decide whether a local article counts as done with.

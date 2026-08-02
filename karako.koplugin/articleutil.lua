@@ -9,31 +9,44 @@ exercised by the specs in `spec/` with a plain Lua 5.1 interpreter.
 
 local ArticleUtil = {}
 
--- Downloaded articles are named "[kk-id_<bookmarkId>] <title>.epub" so that the
--- Karakeep bookmark ID survives a round trip through the filesystem. This mirrors
--- what wallabag.koplugin does with "[w-id_123] ".
-ArticleUtil.ID_PREFIX = "[kk-id_"
-ArticleUtil.ID_POSTFIX = "] "
+-- Downloaded articles carry the Karakeep bookmark ID in their filename, so that
+-- it survives a round trip through the filesystem with nothing to keep in sync.
+--
+-- The marker goes at the *end*, as "<title> [kk-id_<bookmarkId>].epub". It used
+-- to lead, the way wallabag.koplugin's "[w-id_123] " does, but a file browser
+-- shows the start of a name and truncates the end, so a leading marker put an
+-- opaque ID where the title should be and pushed every title out of sight. It
+-- also made the folder sort by ID rather than by title.
+--
+-- Names written by earlier versions still lead with it. Since the marker is
+-- looked for anywhere in the name, both forms read back the same and no
+-- existing download is orphaned or fetched again.
+ArticleUtil.ID_OPEN = "[kk-id_"
+ArticleUtil.ID_CLOSE = "]"
 
 --- Extract the Karakeep bookmark ID from a filename or path.
+--
+-- Reads both the current trailing marker and the leading one earlier versions
+-- wrote. safeTitle() turns any bracket in a title into a round one, so a
+-- "[kk-id_" in a name is always ours.
+--
 -- @tparam string path Filename or full path of a downloaded article.
 -- @treturn string|nil The bookmark ID, or nil if this is not one of our files.
 function ArticleUtil.getBookmarkId(path)
     if type(path) ~= "string" then return nil end
 
     local name = path:match("([^/]+)$") or path
-    local prefix_len = #ArticleUtil.ID_PREFIX
 
-    if name:sub(1, prefix_len) ~= ArticleUtil.ID_PREFIX then
-        return nil
-    end
+    -- Plain finds throughout: the marker contains "[" and "]", which would
+    -- otherwise need escaping as a pattern.
+    local open_at = name:find(ArticleUtil.ID_OPEN, 1, true)
+    if not open_at then return nil end
 
-    -- Plain find: the postfix contains "]", which is harmless in a pattern but
-    -- we do not want to think about it.
-    local endpos = name:find(ArticleUtil.ID_POSTFIX, prefix_len + 1, true)
-    if not endpos then return nil end
+    local from = open_at + #ArticleUtil.ID_OPEN
+    local close_at = name:find(ArticleUtil.ID_CLOSE, from, true)
+    if not close_at then return nil end
 
-    local id = name:sub(prefix_len + 1, endpos - 1)
+    local id = name:sub(from, close_at - 1)
     if id == "" then return nil end
 
     -- Karakeep IDs are opaque, but they are always URL-safe, so anything with a
@@ -41,6 +54,15 @@ function ArticleUtil.getBookmarkId(path)
     if id:find("[/%[%]]") then return nil end
 
     return id
+end
+
+--- Whether a name uses the leading marker earlier versions wrote.
+-- @tparam string path
+-- @treturn bool
+function ArticleUtil.hasLegacyName(path)
+    if type(path) ~= "string" then return false end
+    local name = path:match("([^/]+)$") or path
+    return name:sub(1, #ArticleUtil.ID_OPEN) == ArticleUtil.ID_OPEN
 end
 
 --- Drop a trailing incomplete UTF-8 sequence left behind by a byte-wise truncation.
@@ -101,17 +123,19 @@ function ArticleUtil.safeTitle(title, max_len)
     return title
 end
 
---- Build the local filename for a bookmark.
+--- Build the local filename for a bookmark: "<title> [kk-id_<id>].epub".
 -- @tparam string id Karakeep bookmark ID.
 -- @tparam string|nil title
 -- @tparam[opt=".epub"] string ext
 -- @treturn string
 function ArticleUtil.buildFilename(id, title, ext)
     ext = ext or ".epub"
-    -- Leave room for the prefix, the ID and the extension within a 255 byte name.
-    local budget = 255 - #ArticleUtil.ID_PREFIX - #id - #ArticleUtil.ID_POSTFIX - #ext
-    return ArticleUtil.ID_PREFIX .. id .. ArticleUtil.ID_POSTFIX
-        .. ArticleUtil.safeTitle(title, math.min(180, budget)) .. ext
+    local marker = " " .. ArticleUtil.ID_OPEN .. id .. ArticleUtil.ID_CLOSE
+
+    -- Leave room for the marker and the extension within a 255 byte name.
+    local budget = 255 - #marker - #ext
+
+    return ArticleUtil.safeTitle(title, math.min(180, budget)) .. marker .. ext
 end
 
 --- Encode a Unicode code point as UTF-8. Lua 5.1 has no utf8 library.
