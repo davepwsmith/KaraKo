@@ -72,9 +72,10 @@ Both were confirmed against Karakeep's own scope enforcement in
 - **Finishing by removing from a tag** is the same call in reverse —
   `DELETE /bookmarks/{id}/tags` also routes through `api.bookmarks.updateTags`,
   so it too needs Bookmarks: Read/write and not Tags: Read/write.
-- **Finishing by removing from a list needs Lists: Read/write**, since
-  `DELETE /lists/{id}/bookmarks/{bookmarkId}` is a mutation on the Lists router.
-  This is the one case where syncing a list needs more than Bookmarks.
+- **Finishing by removing from a list is a mutation on the Lists router**
+  (`DELETE /lists/{id}/bookmarks/{bookmarkId}`), so unlike *syncing* a list it is
+  expected to need Lists: Read/write. Verified only that the call succeeds with
+  a key that has it; not that it is refused without.
 
 ### Cutting it down further
 
