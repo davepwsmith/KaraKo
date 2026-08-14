@@ -499,18 +499,21 @@ Use this if your unarchived bookmarks are your reading list rather than your unr
                         separator = true,
                     },
                     {
-                        text = _("Archive it in Karakeep"),
-                        help_text = _("Applies when you mark an article as finished."),
+                        text = _("Counts as finished: marked as finished"),
+                        help_text = _([[
+Which states make the action above happen. Turning all three off means nothing
+ever counts as finished, so no article is acted on and none is deleted from the
+device.]]),
                         checked_func = function() return self.archive_finished end,
                         callback = function() self.archive_finished = not self.archive_finished end,
                     },
                     {
-                        text = _("Archive when 100% read"),
+                        text = _("Counts as finished: 100% read"),
                         checked_func = function() return self.archive_read end,
                         callback = function() self.archive_read = not self.archive_read end,
                     },
                     {
-                        text = _("Archive when marked as abandoned"),
+                        text = _("Counts as finished: marked as abandoned"),
                         checked_func = function() return self.archive_abandoned end,
                         callback = function() self.archive_abandoned = not self.archive_abandoned end,
                         separator = true,
@@ -1484,6 +1487,14 @@ function KaraKo:uploadStatuses(local_articles, quiet)
     -- whether we were called from a sync or straight from the menu.
     local Trapper = require("ui/trapper")
     local archived, highlights_sent, unresolved_total, failed = 0, 0, 0, 0
+
+    -- With every trigger off nothing can ever count as finished, so no article
+    -- is acted on and none is ever deleted from the device. That looks exactly
+    -- like a broken sync from the outside, so say so rather than run silently.
+    if not (self.archive_finished or self.archive_read or self.archive_abandoned) then
+        logger.warn("KaraKo: nothing counts as finished (all three triggers are off);",
+            "no article will be acted on or removed from the device")
+    end
     local examined, total = 0, 0
     for _ in pairs(local_articles) do total = total + 1 end
 
