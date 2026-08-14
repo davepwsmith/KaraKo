@@ -158,7 +158,11 @@ function KarakeepApi:_request(method, url, body_json, filepath, quiet)
         return false, "network_error"
     end
 
-    if code == 200 or code == 201 then
+    -- Any 2xx, not just 200/201: Karakeep answers DELETE with 204 No Content,
+    -- and treating that as a failure would report a removal that did happen as
+    -- one that did not -- leaving the local copy behind for good, since nothing
+    -- else deletes a file once it has a sidecar.
+    if code and code >= 200 and code < 300 then
         if filepath then
             return true, filepath
         end

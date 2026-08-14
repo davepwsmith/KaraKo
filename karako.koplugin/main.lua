@@ -985,6 +985,19 @@ function KaraKo:deleteLocalArticle(path)
     end
 end
 
+--- One summary line for the articles that were finished this sync, worded for
+--- whichever finish action is in force.
+-- @tparam number count
+-- @treturn string
+function KaraKo:finishedSummary(count)
+    if self.finish_action == "remove_from_scope" then
+        return T(N_("Removed %1 article from the synced list or tag.",
+            "Removed %1 articles from the synced list or tag.", count), count)
+    end
+    return T(N_("Archived %1 article in Karakeep.",
+        "Archived %1 articles in Karakeep.", count), count)
+end
+
 --- Make a finished article leave the sync set, however the reader has asked.
 --
 -- Whatever this does must remove the article from what the next sync fetches.
@@ -1001,12 +1014,31 @@ end
 -- @treturn string What was attempted, for the log line.
 function KaraKo:applyFinishAction(api, id)
     if self.finish_action == "remove_from_scope" then
+        local ok, err, code, what
+
         if self.sync_scope == "list" and self.scope_id then
-            return api:removeFromList(self.scope_id, id), "remove from list"
+            ok, err, code = api:removeFromList(self.scope_id, id)
+            what = "remove from list"
         elseif self.sync_scope == "tag" and self.scope_name then
             -- Detaching is by name, matching attachTags; scope_name is what the
             -- tag picker stored alongside the ID.
-            return api:detachTags(id, { self.scope_name }), "detach tag"
+            ok, err, code = api:detachTags(id, { self.scope_name })
+            what = "detach tag"
+        end
+
+        if what then
+            -- Karakeep answers a removal it cannot make sense of with 400, and
+            -- "the bookmark is not in that list" is the case we reach whenever
+            -- a previous sync removed it but could not then delete the local
+            -- copy. The postcondition we actually need is "no longer in the
+            -- scope", which is already true, so treat it as done. Retrying
+            -- forever would otherwise strand the file: once it has a sidecar,
+            -- nothing else on the device will ever remove it.
+            if not ok and (code == 400 or code == 404) then
+                logger.info("KaraKo:", id, "was already out of the sync scope (HTTP", code, ")")
+                return true, what
+            end
+            return ok, what
         end
 
         logger.warn("KaraKo: finish_action=remove_from_scope needs a list or tag scope; archiving instead")
@@ -1241,7 +1273,7 @@ function KaraKo:synchronize(quiet, force_redownload)
         table.insert(lines, T(N_("%1 already on the device.", "%1 already on the device.", skipped), skipped))
     end
     if archived > 0 then
-        table.insert(lines, T(N_("Archived %1 article in Karakeep.", "Archived %1 articles in Karakeep.", archived), archived))
+        table.insert(lines, self:finishedSummary(archived))
     end
     if removed > 0 then
         table.insert(lines, T(N_("Removed %1 local article.", "Removed %1 local articles.", removed), removed))
@@ -1253,8 +1285,13 @@ function KaraKo:synchronize(quiet, force_redownload)
         end
     end
     if upload_failed > 0 then
-        table.insert(lines, T(N_("%1 finished article could not be archived, and will be retried next sync.",
-            "%1 finished articles could not be archived, and will be retried next sync.", upload_failed), upload_failed))
+        if self.finish_action == "remove_from_scope" then
+            table.insert(lines, T(N_("%1 finished article could not be removed from the list, and will be retried next sync.",
+                "%1 finished articles could not be removed from the list, and will be retried next sync.", upload_failed), upload_failed))
+        else
+            table.insert(lines, T(N_("%1 finished article could not be archived, and will be retried next sync.",
+                "%1 finished articles could not be archived, and will be retried next sync.", upload_failed), upload_failed))
+        end
     end
 
     if quiet then
@@ -1541,7 +1578,7 @@ function KaraKo:uploadStatuses(local_articles, quiet)
     if not quiet then
         Trapper:reset() -- clear the progress widget before the summary
         local lines = {
-            T(N_("Archived %1 article.", "Archived %1 articles.", archived), archived),
+            self:finishedSummary(archived),
         }
         if highlights_sent > 0 then
             table.insert(lines, T(N_("Sent %1 highlight.", "Sent %1 highlights.", highlights_sent), highlights_sent))
