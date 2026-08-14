@@ -69,6 +69,12 @@ Both were confirmed against Karakeep's own scope enforcement in
   and Tags are needed only so the settings menu can show you what to pick from.
 - **Tagging on archive needs Bookmarks: Read/write, not Tags: Read/write.**
   `POST /bookmarks/{id}/tags` routes through `api.bookmarks.updateTags`.
+- **Finishing by removing from a tag** is the same call in reverse —
+  `DELETE /bookmarks/{id}/tags` also routes through `api.bookmarks.updateTags`,
+  so it too needs Bookmarks: Read/write and not Tags: Read/write.
+- **Finishing by removing from a list needs Lists: Read/write**, since
+  `DELETE /lists/{id}/bookmarks/{bookmarkId}` is a mutation on the Lists router.
+  This is the one case where syncing a list needs more than Bookmarks.
 
 ### Cutting it down further
 
@@ -351,6 +357,31 @@ you never got round to is caught by the next one. Automatic syncing buys
 timeliness, not correctness. If you sync manually often enough to keep the
 device stocked, manual is perfectly sound.
 
+## What finishing an article does
+
+Under **When an article is finished**, the first choice decides what finishing
+does to the bookmark in Karakeep. Whatever it does has to remove the article
+from what the next sync fetches, because that is what lets the local copy be
+deleted.
+
+- **Finishing archives it** (the default, and the old behaviour). The bookmark is
+  archived, which takes it out of an unarchived-scoped sync.
+- **Finishing removes it from the synced list or tag.** The bookmark is left
+  alone — not archived, still sitting in your library — and only its membership
+  of the list or tag you sync is dropped.
+
+The second is for readers whose unarchived bookmarks *are* their reading list
+rather than their unread queue. If you never archive anything, the default
+leaves you stuck: nothing removes a finished article from the device, because
+the cleanup pass deliberately never deletes a file you have opened. Point the
+sync at a list — say one called `Kindle` — pick this option, and the round trip
+becomes: add to the list wherever you are, read it, and it leaves the device on
+the next sync while the bookmark stays put.
+
+It needs a list or tag scope, since with **Everything unarchived** there is
+nothing to remove the article from; in that case it archives instead and says so
+in the log.
+
 ## What syncs which way, and what happens on a conflict
 
 There is no conflict *resolution* here, and it is worth being plain about that
@@ -359,7 +390,7 @@ rather than implying more than the plugin does.
 | Thing | Direction | On conflict |
 | --- | --- | --- |
 | Article content | Karakeep → device | Re-downloaded only if missing locally |
-| Finished / read | device → Karakeep | Device wins. Un-archiving in Karakeep while the local copy is finished re-archives it on the next sync |
+| Finished / read | device → Karakeep | Device wins. Un-archiving in Karakeep while the local copy is finished re-archives it on the next sync — or, with *remove from scope*, putting it back in the list sends it to the device again |
 | Archived elsewhere | Karakeep → device | Local copy deleted, **but only if you never opened it** |
 | Highlights | device → Karakeep | Create-only, matched by text. See below |
 | Reading position | neither | Not synced at all — that is [KOSync][kosync]'s job, between KOReader devices |

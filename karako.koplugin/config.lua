@@ -29,6 +29,7 @@ Config.SCHEMA = {
     api_token = "string",
     directory = "string",
     archive_tag = "string",
+    finish_action = "string",
     sync_scope = "string",
     scope_id = "string",
     scope_name = "string",
@@ -156,6 +157,12 @@ function Config.template()
         "# download_images   = true",
         "# sync_highlights   = true",
         "# archive_tag       = read-on-kobo",
+        "",
+        "# What finishing an article does to it in Karakeep:",
+        "#   archive            archive the bookmark (the default)",
+        "#   remove_from_scope  drop it from the synced list or tag, leaving the",
+        "#                      bookmark unarchived in your library",
+        "# finish_action = archive",
         "",
     }, "\n")
 end

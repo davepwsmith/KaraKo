@@ -290,6 +290,15 @@ function KaraKo:loadSettings()
     self.archive_tag = self.settings:readSetting("archive_tag", "")
     self.delete_local_after_archive = self.settings:readSetting("delete_local_after_archive", true)
 
+    -- What finishing an article does to it in Karakeep. "archive" is the
+    -- historical behaviour and stays the default. "remove_from_scope" drops it
+    -- out of the synced list or tag instead, for readers whose unarchived
+    -- bookmarks are their reading list rather than their unread queue --
+    -- without it, such a reader has no way to make a finished article leave the
+    -- device, because the sidecar guard in processRemoteDeletes deliberately
+    -- never removes anything that has been opened.
+    self.finish_action = self.settings:readSetting("finish_action", "archive")
+
     self.sync_highlights = self.settings:readSetting("sync_highlights", true)
 
     self.auto_sync = self.settings:readSetting("auto_sync", false)
@@ -315,6 +324,7 @@ function KaraKo:onFlushSettings()
         self.settings:saveSetting("archive_abandoned", self.archive_abandoned)
         self.settings:saveSetting("archive_tag", self.archive_tag)
         self.settings:saveSetting("delete_local_after_archive", self.delete_local_after_archive)
+        self.settings:saveSetting("finish_action", self.finish_action)
         self.settings:saveSetting("sync_highlights", self.sync_highlights)
         self.settings:saveSetting("auto_sync", self.auto_sync)
         self.settings:saveSetting("auto_sync_interval", self.auto_sync_interval)
@@ -470,6 +480,25 @@ While you are reading, only read status and highlights are sent, so a sync canno
                 text = _("When an article is finished"),
                 sub_item_table = {
                     {
+                        text = _("Finishing archives it"),
+                        help_text = _([[
+The article is archived in Karakeep, which is what removes it from the sync.]]),
+                        radio = true,
+                        checked_func = function() return self.finish_action ~= "remove_from_scope" end,
+                        callback = function() self.finish_action = "archive" end,
+                    },
+                    {
+                        text = _("Finishing removes it from the synced list or tag"),
+                        help_text = _([[
+The bookmark itself is left alone -- not archived, still in your library. Only its membership of the list or tag you sync is dropped, which is what removes it from the device.
+
+Use this if your unarchived bookmarks are your reading list rather than your unread queue. Needs the sync set to be a list or a tag; with "Everything unarchived" there is nothing to remove it from, so it archives instead.]]),
+                        radio = true,
+                        checked_func = function() return self.finish_action == "remove_from_scope" end,
+                        callback = function() self.finish_action = "remove_from_scope" end,
+                        separator = true,
+                    },
+                    {
                         text = _("Archive it in Karakeep"),
                         help_text = _("Applies when you mark an article as finished."),
                         checked_func = function() return self.archive_finished end,
@@ -497,7 +526,12 @@ While you are reading, only read status and highlights are sent, so a sync canno
                         callback = function(touchmenu_instance) self:setArchiveTag(touchmenu_instance) end,
                     },
                     {
-                        text = _("Delete the local copy once archived"),
+                        text_func = function()
+                            if self.finish_action == "remove_from_scope" then
+                                return _("Delete the local copy once removed")
+                            end
+                            return _("Delete the local copy once archived")
+                        end,
                         help_text = _("Turn this off to keep finished articles on the device."),
                         checked_func = function() return self.delete_local_after_archive end,
                         callback = function()
@@ -946,6 +980,36 @@ function KaraKo:deleteLocalArticle(path)
         -- deleteFile() takes care of the sidecar and the history entry too.
         FileManager:deleteFile(path, true)
     end
+end
+
+--- Make a finished article leave the sync set, however the reader has asked.
+--
+-- Whatever this does must remove the article from what the next sync fetches.
+-- Deleting the local copy is gated on it succeeding, so an article whose
+-- bookmark could not be updated stays on the device and is retried.
+--
+-- With scope "all" the set is "everything unarchived", so archiving is the only
+-- thing that can remove an article from it; "remove_from_scope" falls back
+-- rather than silently doing nothing and re-downloading forever.
+--
+-- @tparam table api
+-- @tparam string id Bookmark ID.
+-- @treturn bool ok
+-- @treturn string What was attempted, for the log line.
+function KaraKo:applyFinishAction(api, id)
+    if self.finish_action == "remove_from_scope" then
+        if self.sync_scope == "list" and self.scope_id then
+            return api:removeFromList(self.scope_id, id), "remove from list"
+        elseif self.sync_scope == "tag" and self.scope_name then
+            -- Detaching is by name, matching attachTags; scope_name is what the
+            -- tag picker stored alongside the ID.
+            return api:detachTags(id, { self.scope_name }), "detach tag"
+        end
+
+        logger.warn("KaraKo: finish_action=remove_from_scope needs a list or tag scope; archiving instead")
+    end
+
+    return api:updateBookmark(id, { archived = true }), "archive"
 end
 
 function KaraKo:refreshFileManager()
@@ -1441,7 +1505,7 @@ function KaraKo:uploadStatuses(local_articles, quiet)
         end
 
         if finished then
-            local ok = api:updateBookmark(id, { archived = true })
+            local ok, what = self:applyFinishAction(api, id)
 
             if ok then
                 archived = archived + 1
@@ -1458,7 +1522,7 @@ function KaraKo:uploadStatuses(local_articles, quiet)
                 -- Left on the device with its sidecar intact, so the next run
                 -- picks it up again.
                 failed = failed + 1
-                logger.warn("KaraKo: could not archive", id, "- will retry next sync")
+                logger.warn("KaraKo: could not", what, id, "- will retry next sync")
             end
         end
     end

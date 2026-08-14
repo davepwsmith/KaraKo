@@ -327,6 +327,31 @@ function KarakeepApi:attachTags(id, names)
     return self:call("POST", "/bookmarks/" .. id .. "/tags", { body = { tags = tags } })
 end
 
+--- Detach tags by name. Tags that are not attached are ignored by Karakeep.
+--
+-- The mirror of `attachTags`, used to drop a finished article out of a
+-- tag-scoped sync for readers who do not use the archive as a read flag.
+--
+-- @tparam string id
+-- @tparam table names Array of tag names.
+function KarakeepApi:detachTags(id, names)
+    local tags = {}
+    for _, name in ipairs(names) do
+        table.insert(tags, { tagName = name })
+    end
+    return self:call("DELETE", "/bookmarks/" .. id .. "/tags", { body = { tags = tags } })
+end
+
+--- Remove a bookmark from a list, leaving the bookmark itself untouched.
+--
+-- The list-scoped counterpart of `detachTags`. Karakeep takes no body here.
+--
+-- @tparam string list_id
+-- @tparam string bookmark_id
+function KarakeepApi:removeFromList(list_id, bookmark_id)
+    return self:call("DELETE", "/lists/" .. list_id .. "/bookmarks/" .. bookmark_id)
+end
+
 --- Fetch the highlights Karakeep already holds for a bookmark, so we do not
 --- create duplicates on every sync.
 function KarakeepApi:getHighlights(id)
