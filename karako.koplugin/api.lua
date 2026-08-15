@@ -158,7 +158,11 @@ function KarakeepApi:_request(method, url, body_json, filepath, quiet)
         return false, "network_error"
     end
 
-    if code == 200 or code == 201 then
+    -- Any 2xx, not just 200/201: Karakeep answers DELETE with 204 No Content,
+    -- and treating that as a failure would report a removal that did happen as
+    -- one that did not -- leaving the local copy behind for good, since nothing
+    -- else deletes a file once it has a sidecar.
+    if code and code >= 200 and code < 300 then
         if filepath then
             return true, filepath
         end
@@ -325,6 +329,31 @@ function KarakeepApi:attachTags(id, names)
         table.insert(tags, { tagName = name, attachedBy = "human" })
     end
     return self:call("POST", "/bookmarks/" .. id .. "/tags", { body = { tags = tags } })
+end
+
+--- Detach tags by name. Tags that are not attached are ignored by Karakeep.
+--
+-- The mirror of `attachTags`, used to drop a finished article out of a
+-- tag-scoped sync for readers who do not use the archive as a read flag.
+--
+-- @tparam string id
+-- @tparam table names Array of tag names.
+function KarakeepApi:detachTags(id, names)
+    local tags = {}
+    for _, name in ipairs(names) do
+        table.insert(tags, { tagName = name })
+    end
+    return self:call("DELETE", "/bookmarks/" .. id .. "/tags", { body = { tags = tags } })
+end
+
+--- Remove a bookmark from a list, leaving the bookmark itself untouched.
+--
+-- The list-scoped counterpart of `detachTags`. Karakeep takes no body here.
+--
+-- @tparam string list_id
+-- @tparam string bookmark_id
+function KarakeepApi:removeFromList(list_id, bookmark_id)
+    return self:call("DELETE", "/lists/" .. list_id .. "/bookmarks/" .. bookmark_id)
 end
 
 --- Fetch the highlights Karakeep already holds for a bookmark, so we do not

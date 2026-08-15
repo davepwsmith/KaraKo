@@ -67,6 +67,12 @@ api_token = ak1_secret
         assertNil(values.download_images)
     end)
 
+    it("reads finish_action, so the file can pick what finishing does", function()
+        local values, problems = Config.parse("finish_action = remove_from_scope")
+        assertEqual(values.finish_action, "remove_from_scope")
+        assertEqual(#problems, 0)
+    end)
+
     it("reports an unknown setting rather than ignoring it", function()
         local values, problems = Config.parse("srever_url = https://e.com")
         assertNil(values.srever_url)

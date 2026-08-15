@@ -254,6 +254,18 @@ function ArticleUtil.sanitizeHtml(html)
         html = stripElement(html, tag)
     end
 
+    -- Attributes holding raw JSON, which WordPress emits as
+    -- data-wp-context="{"imageId":"…"}" with the inner quotes left unescaped.
+    -- The attribute value therefore ends at the second quote and the rest of
+    -- the JSON becomes stray attributes, which is not well-formed XML. crengine
+    -- recovers by dropping the element -- and when that element is the <figure>
+    -- around a picture, the <img> goes with it while the <figcaption> survives
+    -- as text, so the article reads with captions and no images. %b{} matches
+    -- the balanced braces including the quotes inside them, which a plain
+    -- "[^"]*" cannot. The attributes carry nothing a reader needs.
+    html = html:gsub("%s[%w%-_:%.]+%s*=%s*\"%b{}\"", "")
+    html = html:gsub("%s[%w%-_:%.]+%s*=%s*'%b{}'", "")
+
     -- Inline event handlers: onclick="…", onload='…'
     html = html:gsub("%s[oO][nN]%a+%s*=%s*\"[^\"]*\"", "")
     html = html:gsub("%s[oO][nN]%a+%s*=%s*'[^']*'", "")
