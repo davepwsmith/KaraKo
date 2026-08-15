@@ -153,6 +153,23 @@ describe("escapeXml", function()
 end)
 
 describe("sanitizeHtml", function()
+    it("drops JSON-valued attributes, which would otherwise cost the image", function()
+        -- WordPress ships this verbatim, inner quotes and all, so the attribute
+        -- ends at the second quote and the tag stops being well-formed XML.
+        -- crengine then drops the <figure> and takes the <img> with it, leaving
+        -- an article of captions with no pictures.
+        local out = ArticleUtil.sanitizeHtml(
+            '<figure data-wp-context="{"imageId":"abc123"}" data-wp-interactive="core/image">'
+            .. '<img src="a.jpg"/><figcaption>A pig</figcaption></figure>')
+        -- These assertions take plain substrings, not patterns.
+        assertNoMatch(out, "data-wp-context")
+        assertNoMatch(out, "imageId")
+        assertMatch(out, "<img src=\"a.jpg\"/>")
+        assertMatch(out, "A pig")
+        -- A well-formed attribute alongside it is left alone.
+        assertMatch(out, "data-wp-interactive")
+    end)
+
     it("removes scripts and their contents", function()
         local out = ArticleUtil.sanitizeHtml('<p>a</p><script>alert("x")</script><p>b</p>')
         assertNoMatch(out, "alert")
