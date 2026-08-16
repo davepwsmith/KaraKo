@@ -280,6 +280,28 @@ function ArticleUtil.htmlToText(html)
     return s
 end
 
+--- The article text as Karakeep's own reader measures it.
+--
+-- Karakeep indexes highlights by offsets into its DOM text: the text nodes
+-- concatenated, with nothing inserted where the tags were. htmlToText() puts a
+-- space in place of every tag so that words do not run together for matching,
+-- which is right for matching and wrong for offsets -- it inflates every
+-- position by the number of tags before it, so a highlight sent to Karakeep
+-- lands progressively further past where the reader marked it. Offsets must
+-- therefore be resolved here, not there.
+--
+-- Whitespace is deliberately left as-is, because Karakeep counts it.
+--
+-- @tparam string|nil html
+-- @treturn string
+function ArticleUtil.htmlToRenderedText(html)
+    if type(html) ~= "string" then return "" end
+
+    local s = ArticleUtil.sanitizeHtml(html)
+    s = s:gsub("<[^>]*>", "")
+    return ArticleUtil.decodeEntities(s)
+end
+
 --- Collapse runs of whitespace, so text captured on device can be compared with
 -- text rendered on the server.
 -- @tparam string|nil s
@@ -344,22 +366,52 @@ end
 -- resolves to its first occurrence, and one that cannot be found at all returns
 -- nil so the caller can decide what to do.
 --
--- @tparam string text Article plain text, as returned by htmlToText().
+-- Matching ignores whitespace entirely. The two sides disagree about it by
+-- construction: KOReader hands us a passage with a space where a paragraph
+-- ended, Karakeep's DOM text has nothing there at all. Comparing the two with
+-- every space removed sidesteps that, and the map built alongside turns a
+-- position in the squeezed copy back into one in the real text, so the offsets
+-- still count the whitespace Karakeep counts.
+--
+-- @tparam string s
+-- @treturn string The text with every ASCII space character removed.
+-- @treturn table Byte position in that copy -> byte position in `s`.
+local function squeeze(s)
+    local out, map = {}, {}
+    for i = 1, #s do
+        local b = s:byte(i)
+        -- ASCII whitespace only. UTF-8 continuation bytes are all >= 0x80, so
+        -- a multi-byte character can never be mistaken for a space and torn.
+        if b ~= 32 and not (b >= 9 and b <= 13) then
+            out[#out + 1] = string.char(b)
+            map[#out] = i
+        end
+    end
+    return table.concat(out), map
+end
+
+-- @tparam string text Article text, as returned by htmlToRenderedText() -- the
+--   stream Karakeep measures offsets in, NOT htmlToText()'s.
 -- @tparam string needle The highlighted passage.
 -- @treturn number|nil Zero-based start offset, in UTF-16 code units -- what
 --   Karakeep indexes by. See utf16Length().
 -- @treturn number|nil End offset, exclusive.
 function ArticleUtil.findTextOffsets(text, needle)
     if type(text) ~= "string" or type(needle) ~= "string" then return nil end
-
-    needle = ArticleUtil.normaliseWhitespace(needle)
     if needle == "" then return nil end
+
+    local hay, map = squeeze(text)
+    local pin = squeeze(needle)
+    if pin == "" then return nil end
 
     local match_pos, match_len
 
-    local start_pos = text:find(needle, 1, true)
+    local start_pos = hay:find(pin, 1, true)
     if start_pos then
-        match_pos, match_len = start_pos, #needle
+        match_pos, match_len = start_pos, #pin
+    -- Length is judged on the passage as given, not the squeezed copy: the
+    -- threshold is about having a distinctive middle to probe with, and
+    -- removing the spaces would quietly raise the bar.
     elseif #needle > 40 then
         -- KOReader may have captured a partial word at either end, or the
         -- crawler and the renderer may disagree about punctuation. Retry on a
@@ -367,10 +419,10 @@ function ArticleUtil.findTextOffsets(text, needle)
         -- character boundaries: cutting mid-sequence would still match
         -- byte-wise, but the offsets it produced would point into the middle
         -- of a character.
-        local from = alignToCharStart(needle, 11)
-        local probe = ArticleUtil.trimPartialUtf8(needle:sub(from, #needle - 10))
+        local from = alignToCharStart(pin, 11)
+        local probe = ArticleUtil.trimPartialUtf8(pin:sub(from, #pin - 10))
         if probe ~= "" then
-            local probe_pos = text:find(probe, 1, true)
+            local probe_pos = hay:find(probe, 1, true)
             if probe_pos then
                 match_pos, match_len = probe_pos, #probe
             end
@@ -379,8 +431,12 @@ function ArticleUtil.findTextOffsets(text, needle)
 
     if not match_pos then return nil end
 
-    local start_offset = ArticleUtil.utf16Length(text:sub(1, match_pos - 1))
-    local length = ArticleUtil.utf16Length(text:sub(match_pos, match_pos + match_len - 1))
+    -- Back to the real text, where the whitespace Karakeep counts still exists.
+    local first_byte = map[match_pos]
+    local last_byte = map[match_pos + match_len - 1]
+
+    local start_offset = ArticleUtil.utf16Length(text:sub(1, first_byte - 1))
+    local length = ArticleUtil.utf16Length(text:sub(first_byte, last_byte))
 
     return start_offset, start_offset + length
 end

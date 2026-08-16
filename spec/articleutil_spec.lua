@@ -197,7 +197,38 @@ describe("htmlToText", function()
     end)
 end)
 
+describe("htmlToRenderedText", function()
+    it("puts nothing where the tags were, unlike htmlToText", function()
+        -- This is the whole difference: Karakeep concatenates its DOM text, so
+        -- an offset must not count a space per tag.
+        assertEqual(ArticleUtil.htmlToRenderedText("<p>one</p><p>two</p>"), "onetwo")
+        assertEqual(ArticleUtil.htmlToText("<p>one</p><p>two</p>"), "one two")
+    end)
+
+    it("still drops scripts and decodes entities", function()
+        assertEqual(ArticleUtil.htmlToRenderedText("<p>a &amp; b</p><script>x()</script>"), "a & b")
+    end)
+
+    it("keeps whitespace, because Karakeep counts it", function()
+        assertEqual(ArticleUtil.htmlToRenderedText("<p>a  b</p>"), "a  b")
+    end)
+end)
+
 describe("findTextOffsets", function()
+    it("does not count the tags, so Karakeep marks what the reader marked", function()
+        -- A passage running across a paragraph break: KOReader hands it back
+        -- with a space there, Karakeep's text has nothing there. Before this
+        -- was fixed the offsets came out one-per-tag too high, and every
+        -- highlight in an article landed further past its text than the last.
+        local text = ArticleUtil.htmlToRenderedText("<p>Alpha beta.</p><p>Gamma delta.</p>")
+        assertEqual(text, "Alpha beta.Gamma delta.")
+
+        local first, last = ArticleUtil.findTextOffsets(text, "beta. Gamma")
+        assertEqual(first, 6)
+        assertEqual(last, 16)
+    end)
+
+
     local text = "The quick brown fox jumps over the lazy dog near the river bank today"
 
     it("finds an exact passage", function()

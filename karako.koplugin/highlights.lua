@@ -122,9 +122,14 @@ function Highlights.push(api, bookmark_id, path, doc_settings)
     local ok, bookmark = api:getBookmark(bookmark_id)
     if ok and bookmark and bookmark.content then
         if bookmark.content.htmlContent and bookmark.content.htmlContent ~= "" then
-            article_text = ArticleUtil.htmlToText(bookmark.content.htmlContent)
+            -- Rendered text, not htmlToText(): offsets have to be counted in
+            -- the stream Karakeep measures, which has nothing where the tags
+            -- were and keeps its whitespace.
+            article_text = ArticleUtil.htmlToRenderedText(bookmark.content.htmlContent)
         elseif bookmark.content.text then
-            article_text = ArticleUtil.normaliseWhitespace(bookmark.content.text)
+            -- Likewise verbatim -- collapsing runs of whitespace here would
+            -- shift every offset past the first one that was collapsed.
+            article_text = bookmark.content.text
         end
     end
 
