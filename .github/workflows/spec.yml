@@ -22,7 +22,9 @@ jobs:
     name: LuaJIT
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # v4 runs on Node 20, which GitHub has deprecated and now forces onto
+      # Node 24 with a warning on every run.
+      - uses: actions/checkout@v7
 
       - name: Install LuaJIT
         run: |
