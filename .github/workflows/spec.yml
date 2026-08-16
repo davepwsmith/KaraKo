@@ -1,0 +1,44 @@
+# Runs the spec suite on every push and pull request.
+#
+# release.yml only fires on a v* tag, so until now nothing checked a change
+# before it landed. The suite is pure Lua with no KOReader dependencies -- that
+# is what spec/all.lua's package.path setup is for -- so it needs nothing but a
+# LuaJIT binary and finishes in well under a second.
+#
+# GitHub Actions minutes are free for public repositories, so this costs the
+# project nothing.
+name: Spec
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  spec:
+    name: LuaJIT
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LuaJIT
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends luajit
+
+      # Catches a syntax error in a file the specs happen not to require, which
+      # on a plugin means KOReader refusing to load it at runtime instead.
+      - name: Byte-compile every plugin file
+        # xargs, not -exec: find reports its own exit status and not the
+        # command's, so an -exec form here would pass even with a file that
+        # does not compile. One file per call because luajit -b takes a single
+        # input and would read a second as an output path.
+        run: find karako.koplugin -name '*.lua' -print0 | xargs -0 -n1 luajit -bl > /dev/null
+
+      # spec/all.lua sets package.path the way KOReader's pluginloader does and
+      # exits non-zero when anything fails, so this needs no wrapper.
+      - name: Run specs
+        run: luajit spec/all.lua
